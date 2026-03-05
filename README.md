@@ -7,8 +7,13 @@ Wenn du es **headless** (z.B. auf einem Server/RPi) laufen lassen willst, kannst
 
 ### 1) Installation
 
-Zuerst muss das install.sh/install.bat ausgeführt werden. Beim Installieren wird auch eine Testinstanz gestartet.
-Diese kann nach dem Installieren direkt mit "q" beendet werden.
+Zuerst muss das install.sh/install.bat ausgeführt werden.
+
+```bash
+sh install.sh
+```
+
+Beim Installieren wird auch eine Testinstanz gestartet. Diese kann nach dem Installieren direkt mit "q" beendet werden.
 
 ### 2) Schnell & ohne Zusatz-Dependencies: MJPEG
 
