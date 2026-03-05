@@ -47,9 +47,14 @@ import cv2
 
 @dataclass
 class FramePacket:
-    ts: float
-    bgr: "object"  # numpy.ndarray (kept as object to avoid hard dependency here)
-    jpg: bytes
+    """Immutable snapshot of one annotated video frame.
+
+    Produced by FrameHub.update() on every camera tick.
+    Consumed by MJPEG (jpg) and WebRTC (bgr) endpoints.
+    """
+    ts: float       # monotonic wall-clock timestamp (time.time())
+    bgr: "object"   # numpy.ndarray in BGR colour order (OpenCV convention)
+    jpg: bytes      # pre-encoded JPEG bytes for MJPEG streaming
 
 
 class FrameHub:
@@ -98,7 +103,14 @@ class FrameHub:
             self._ae = None
 
     def update(self, frame_bgr) -> None:
+        """Store a new annotated frame from the producer (webcam) thread.
+
+        Encodes the frame to JPEG immediately so MJPEG clients can
+        stream it without re-encoding. Wakes all blocking waiters
+        (MJPEG threads and the async WebRTC bridge).
+        """
         ts = time.time()
+        # Pre-encode to JPEG once; all MJPEG clients share this copy.
         ok, enc = cv2.imencode(
             ".jpg",
             frame_bgr,
@@ -107,6 +119,7 @@ class FrameHub:
         if not ok:
             return
         jpg = enc.tobytes()
+        # Swap the latest packet atomically and wake consumers.
         with self._cv:
             self._pkt = FramePacket(ts=ts, bgr=frame_bgr, jpg=jpg)
             self._cv.notify_all()
@@ -119,6 +132,7 @@ class FrameHub:
                 pass
 
     def latest(self) -> Optional[FramePacket]:
+        """Return the most recent frame without blocking (non-blocking peek)."""
         with self._lock:
             return self._pkt
 
@@ -176,7 +190,11 @@ class FrameHub:
 
 @dataclass
 class ControlAPI:
-    """Callbacks provided by webcam.py."""
+    """Callbacks provided by webcam.py to control the camera worker.
+
+    get_state  – returns a dict with current preset, fps, pose/overlay/inference flags, etc.
+    command    – dispatches a control command (next/prev preset, toggle_pose, stop, …).
+    """
     get_state: Callable[[], Dict[str, Any]]
     command: Callable[[Any], None]
 
@@ -207,6 +225,11 @@ class StreamQuality:
     _lock: Any = field(default_factory=threading.RLock, repr=False)
 
     def snapshot(self) -> Dict[str, Any]:
+        """Return a thread-safe copy of all quality settings as a plain dict.
+
+        Used by API responses and by HubVideoTrack to freeze quality at
+        connection setup time.
+        """
         with self._lock:
             return {
                 "preset": self.preset,
@@ -219,6 +242,16 @@ class StreamQuality:
             }
 
     def _apply_preset(self, preset: str) -> None:
+        """Overwrite all quality fields to match a named preset.
+
+        Supported presets:
+          auto   – native resolution, 30 fps, no fixed target
+          low    – 640×360, scale 2×, 15 fps, 500 kbps
+          medium – 960×540, 24 fps, 1200 kbps
+          high   – 1280×720 (HD), 30 fps, 2500 kbps  (default)
+          ultra  – 1920×1080 (FHD), 30 fps, 8000 kbps
+          custom – only sets the preset label; individual fields untouched
+        """
         p = (preset or "").strip().lower()
         if p == "auto":
             self.preset = "auto"
@@ -247,6 +280,14 @@ class StreamQuality:
             self.preset = p or self.preset
 
     def update_from(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge partial quality updates from the web UI into current settings.
+
+        Each field is independently clamped to safe bounds. If a ``preset``
+        key is present the corresponding preset is applied first, then any
+        explicit overrides are layered on top.
+
+        Returns the resulting quality snapshot (safe to send back to the client).
+        """
         if not isinstance(data, dict):
             data = {}
         with self._lock:
@@ -288,6 +329,13 @@ class StreamQuality:
 # -----------------------------
 
 def _controls_html() -> str:
+    """Return the shared HTML snippet for the control bar and inline JavaScript.
+
+    Contains buttons (prev/next preset, pose, overlay, inference, stop),
+    quality controls (preset dropdown, bitrate slider, scale, fps), status
+    pills, and the JS logic for command queuing, quality debounce, keyboard
+    shortcuts, and periodic state polling via /api/state.
+    """
     return """
 <div class="controls" id="controls">
   <button id="reconnect" type="button" class="muted" title="Nur WebRTC: Verbindung neu aufbauen">Reconnect</button>
@@ -693,6 +741,11 @@ def _controls_html() -> str:
 
 
 def _page_html(title: str, stream_label: str, codec_label: str, media_html: str, hint: str = "") -> bytes:
+    """Build a complete HTML page for either MJPEG or WebRTC mode.
+
+    Assembles the header/chrome, the media element placeholder, and the
+    shared control-bar HTML.  Returns UTF-8 encoded bytes ready to serve.
+    """
     html = f"""<!doctype html>
 <html lang="de">
   <head>
@@ -735,7 +788,20 @@ def _page_html(title: str, stream_label: str, codec_label: str, media_html: str,
 
 
 class _MjpegHandler(BaseHTTPRequestHandler):
-    # Set by factory
+    """HTTP request handler for the MJPEG fallback server.
+
+    Routes:
+      GET /              – index page with an <img src="/mjpeg"> tag
+      GET /mjpeg          – multipart MJPEG stream (long-lived connection)
+      GET /latest.jpg     – single snapshot (honours scale & jpeg_quality)
+      GET /health         – simple JSON liveness probe
+      GET /api/state      – current worker state (preset, pose, fps, …)
+      GET /api/quality    – current quality settings snapshot
+      POST /api/quality   – update quality settings
+      POST /api/cmd       – send a control command (JSON body)
+      POST /api/cmd/{cmd} – send a control command (URL path)
+    """
+    # Set by the handler_factory closure in run_mjpeg_server()
     hub: FrameHub
     title: str
     control: Optional[ControlAPI]
@@ -744,6 +810,7 @@ class _MjpegHandler(BaseHTTPRequestHandler):
     server_version = "sentinelCam/0.2"
 
     def _send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
+        """Serialize *payload* as JSON and write a complete HTTP response."""
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -752,6 +819,8 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):  # noqa: N802
+        """Dispatch incoming GET requests to the appropriate handler."""
+        # --- Index page ---
         if self.path in ("/", "/index.html"):
             body = _page_html(
                 title=self.title,
@@ -860,6 +929,8 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "not found")
 
     def do_POST(self):  # noqa: N802
+        """Dispatch incoming POST requests (quality updates, control commands)."""
+        # --- Quality update ---
         if self.path == "/api/quality":
             try:
                 n = int(self.headers.get('Content-Length', '0') or '0')
@@ -909,7 +980,7 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "not found")
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: D401
-        # Keep stdout clean by default.
+        # Suppress default stderr logging to keep stdout clean.
         return
 
 
@@ -921,10 +992,17 @@ def run_mjpeg_server(
     control: Optional[ControlAPI] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> None:
-    """Blocking MJPEG server (stdlib)."""
+    """Start a blocking MJPEG HTTP server (stdlib only, no extra deps).
+
+    Creates a :class:`ThreadingHTTPServer` that serves the index page,
+    MJPEG stream, snapshot endpoint, and the control/quality REST API.
+    Runs until *stop_event* is set (if provided), then shuts down.
+    """
 
     quality = StreamQuality()
 
+    # Dynamic handler factory: each request gets a fresh handler class
+    # whose class-level attributes point to the shared hub/control/quality.
     def handler_factory(*_a, **_k):
         cls = type("MjpegHandler", (_MjpegHandler,), {})
         cls.hub = hub
@@ -950,6 +1028,10 @@ def run_mjpeg_server(
 # -----------------------------
 
 def _require_webrtc_deps():
+    """Verify that optional WebRTC dependencies (aiohttp, aiortc, av) are installed.
+
+    Raises RuntimeError with installation instructions if any are missing.
+    """
     try:
         import aiohttp  # noqa: F401
         import aiortc  # noqa: F401
@@ -1080,7 +1162,24 @@ async def run_webrtc_server(
     rtc_min_port: int = 0,
     rtc_max_port: int = 0,
 ) -> None:
-    """Blocking WebRTC server (aiohttp + aiortc)."""
+    """Start a blocking WebRTC video server (aiohttp + aiortc).
+
+    Serves an HTML page with WebRTC negotiation JS, an /offer endpoint for
+    SDP exchange, and falls back to MJPEG if the browser cannot establish
+    a WebRTC connection.  Also exposes the same /api/state, /api/quality,
+    and /api/cmd REST endpoints as the MJPEG server.
+
+    Args:
+        hub:           Shared frame buffer fed by the camera producer thread.
+        host/port:     Bind address for the aiohttp HTTP server.
+        codec:         Preferred video codec (auto/h264/vp8/vp9/av1).
+        title:         Page title shown in the browser.
+        control:       Optional ControlAPI for camera commands.
+        stop_event:    Threading event that signals graceful shutdown.
+        advertise_ip:  Restrict ICE host candidates to this LAN IP.
+        rtc_min_port:  Lower bound of the UDP port range for ICE/RTP.
+        rtc_max_port:  Upper bound of the UDP port range for ICE/RTP.
+    """
 
     _require_webrtc_deps()
 
@@ -1166,8 +1265,8 @@ async def run_webrtc_server(
 
     loop.set_exception_handler(_exc_handler)
 
-    pcs = set()
-    offer_lock = asyncio.Lock()
+    pcs = set()           # active RTCPeerConnections (for cleanup on shutdown)
+    offer_lock = asyncio.Lock()  # serialise SDP offer handling to avoid races
 
     def _munge_sdp_bandwidth(sdp: str, kbps: int) -> str:
         """Insert/replace bandwidth limits in the video m-section.
@@ -1243,8 +1342,8 @@ async def run_webrtc_server(
                 out = out2
 
         return "\r\n".join(out) + "\r\n"
-    closing = False
-    quality = StreamQuality()
+    closing = False       # set True during shutdown; rejects new offers
+    quality = StreamQuality()  # shared quality state; updated by /api/quality
 
     # NOTE ABOUT BITRATE CONTROL:
     #
@@ -1468,6 +1567,12 @@ async def run_webrtc_server(
         return body.replace(b"</body>", js.encode("utf-8") + b"\n</body>")
 
     class HubVideoTrack(MediaStreamTrack):
+        """Custom aiortc video track that reads frames from the shared FrameHub.
+
+        Quality settings (fps, scale, target resolution) are *frozen* at
+        construction time to avoid mid-stream encoder instability on Windows.
+        Quality changes therefore require a WebRTC reconnect.
+        """
         kind = "video"
 
         def __init__(self, quality_ref: StreamQuality):
@@ -1487,10 +1592,10 @@ async def run_webrtc_server(
             self._scale = 1.0
             self._target_w = None
             self._target_h = None
-            self._last_vf_src_ts = 0.0
-            self._last_pkt_ts_for_fps = 0.0
-            self._src_dt_ema = None  # seconds
-            self._pts = 0
+            self._last_vf_src_ts = 0.0       # timestamp of last converted VideoFrame
+            self._last_pkt_ts_for_fps = 0.0   # last packet timestamp used for source FPS estimation
+            self._src_dt_ema = None            # exponential moving average of source frame interval (seconds)
+            self._pts = 0                      # running presentation timestamp counter (90 kHz clock)
             try:
                 q = self._quality.snapshot() if self._quality else {}
                 self._fps = float(q.get("fps") or 30.0)
@@ -1505,11 +1610,12 @@ async def run_webrtc_server(
                 self._target_w = None
                 self._target_h = None
             self._fps = float(max(5.0, min(60.0, self._fps)))
+            # NaN guard: if scale is NaN (comparison with itself fails), reset to 1.0
             if not (self._scale == self._scale):
                 self._scale = 1.0
             self._scale = float(max(1.0, min(4.0, self._scale)))
-            self._pts_step = int(90000 / self._fps)
-            self._next_due = 0.0
+            self._pts_step = int(90000 / self._fps)  # PTS increment per frame (90 kHz RTP clock)
+            self._next_due = 0.0  # loop.time() when next frame should be emitted
 
         async def recv(self):
             """Return a frame at a steady cadence.
@@ -1622,9 +1728,15 @@ async def run_webrtc_server(
             return vf
 
     async def index(_request):
+        """Serve the WebRTC index page with embedded negotiation JS."""
         return web.Response(body=_webrtc_index_html(), content_type="text/html")
 
     async def mjpeg(_request):
+        """MJPEG fallback stream, also available in WebRTC mode.
+
+        Returns a long-lived multipart/x-mixed-replace response that
+        pushes JPEG frames as they arrive from the hub.
+        """
         # Reuse MJPEG endpoint even in WebRTC mode (fallback)
         boundary = "frame"
         resp = web.StreamResponse(
@@ -1693,6 +1805,7 @@ async def run_webrtc_server(
                     pass
 
     async def api_state(_request):
+        """Return the current worker state + capture dimensions + quality snapshot."""
         if control is None:
             return web.json_response({"ok": False, "error": "control_disabled"}, status=503)
         s = control.get_state()
@@ -1711,9 +1824,11 @@ async def run_webrtc_server(
         return web.json_response(s)
 
     async def api_quality_get(_request):
+        """Return the current quality settings as JSON."""
         return web.json_response({"ok": True, **quality.snapshot()})
 
     async def api_quality_post(request):
+        """Apply quality changes and signal whether a WebRTC reconnect is needed."""
         try:
             data = await request.json()
         except Exception:
@@ -1751,6 +1866,7 @@ async def run_webrtc_server(
         return web.json_response({"ok": True, "reconnect": reconnect, **qs})
 
     async def api_cmd_json(request):
+        """Handle a control command sent as a JSON body ({cmd, seq})."""
         if control is None:
             return web.json_response({"ok": False, "error": "control_disabled"}, status=503)
         try:
@@ -1765,6 +1881,7 @@ async def run_webrtc_server(
         return web.json_response({"ok": True, "cmd": cmd, "seq": seq})
 
     async def api_cmd(request):
+        """Handle a control command with the command name in the URL path."""
         if control is None:
             return web.json_response({"ok": False, "error": "control_disabled"}, status=503)
         cmd = request.match_info.get("cmd", "").strip().lower()
@@ -1775,6 +1892,13 @@ async def run_webrtc_server(
 
 
     async def offer(request):
+        """WebRTC SDP offer/answer exchange.
+
+        The browser sends its SDP offer; we create a PeerConnection, attach
+        a HubVideoTrack, set codec/bitrate preferences, and return our SDP
+        answer.  Serialised via offer_lock to prevent concurrent encoder
+        DEFAULT_BITRATE patches from racing.
+        """
         nonlocal closing
         if stop_event is not None and stop_event.is_set():
             return web.json_response({"ok": False, "error": "stopping"}, status=410)
@@ -1855,6 +1979,7 @@ async def run_webrtc_server(
                 return web.json_response({"ok": False, "error": "offer_failed", "detail": msg[:200]}, status=500)
 
     async def on_shutdown(app):
+        """Close all active PeerConnections during graceful server shutdown."""
         nonlocal closing
         closing = True
         async with offer_lock:
@@ -1863,10 +1988,11 @@ async def run_webrtc_server(
                 await asyncio.gather(*coros, return_exceptions=True)
             pcs.clear()
 
+    # --- Register all HTTP routes ---
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/mjpeg", mjpeg)
-    app.router.add_post("/offer", offer)
+    app.router.add_post("/offer", offer)          # WebRTC SDP negotiation
     app.router.add_get("/api/state", api_state)
     app.router.add_get("/api/quality", api_quality_get)
     app.router.add_post("/api/quality", api_quality_post)
@@ -1874,12 +2000,13 @@ async def run_webrtc_server(
     app.router.add_post("/api/cmd/{cmd}", api_cmd)
     app.on_shutdown.append(on_shutdown)
 
+    # --- Start the HTTP server and block until shutdown ---
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=int(port))
     await site.start()
 
-    # Run until stop_event is set
+    # Poll stop_event at 0.5 s intervals; this is the main run-loop.
     while stop_event is None or (not stop_event.is_set()):
         await asyncio.sleep(0.5)
 
