@@ -5,7 +5,12 @@
 Standardmäßig zeigt `webcam.py` das Ergebnis in einem OpenCV-Fenster.
 Wenn du es **headless** (z.B. auf einem Server/RPi) laufen lassen willst, kannst du den Stream auf einer Webseite anzeigen:
 
-### 1) Schnell & ohne Zusatz-Dependencies: MJPEG
+### 1) Installation
+
+Zuerst muss das install.sh/install.bat ausgeführt werden. Beim Installieren wird auch eine Testinstanz gestartet.
+Diese kann nach dem Installieren direkt mit "q" beendet werden.
+
+### 2) Schnell & ohne Zusatz-Dependencies: MJPEG
 
 ```bash
 ./run.sh --web --stream mjpeg --port 8080
@@ -17,11 +22,12 @@ Dann im Browser öffnen:
 
 MJPEG ist sehr kompatibel, aber nicht der effizienteste Codec.
 
-### 2) Niedrigere Latenz: WebRTC (empfohlen)
+### 3) Niedrigere Latenz: WebRTC (empfohlen)
 
 WebRTC liefert typischerweise die geringste End-to-End-Latenz im Browser.
 
-Zusatz-Pakete installieren:
+Dafür wird ein Zusatz-Paket mit dem install.sh/install.bat automatisch installiert.
+Für eine manuelle Installation kann dieser Befehl verwendet werden:
 
 ```bash
 python -m pip install aiohttp aiortc av
