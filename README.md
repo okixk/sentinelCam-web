@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 sentinelCam Worker
 
 ## Web-Ausgabe (Browser)
@@ -48,3 +49,6 @@ Wenn `--stream auto` genutzt wird (Default) und WebRTC nicht verfügbar ist, fä
 * Für RTSP-Quellen kann eine kleine Buffer-Queue helfen (wir setzen best-effort `CAP_PROP_BUFFERSIZE=1`).
 
 > Hinweis: Der eingebaute Web-Server hat **keine Auth**. Für echte Deployments bitte hinter Reverse-Proxy/VPN betreiben.
+=======
+# sentinelCam-web
+>>>>>>> 4e90794cf6e57a9e9a99b0ec2d635150a8471645
