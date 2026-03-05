@@ -13,7 +13,7 @@ Zuerst muss das install.sh/install.bat ausgeführt werden.
 sh install.sh
 ```
 
-Beim Installieren wird auch eine Testinstanz gestartet. Diese kann nach dem Installieren direkt mit "q" beendet werden.
+Beim Installieren wird auch eine Testinstanz gestartet. Diese kann nach dem Installieren direkt mit `q` beendet werden.
 
 ### 2) Schnell & ohne Zusatz-Dependencies: MJPEG
 
