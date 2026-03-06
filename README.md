@@ -27,7 +27,7 @@ Dann im Browser öffnen:
 
 MJPEG ist sehr kompatibel, aber nicht der effizienteste Codec.
 
-### 3) Niedrigere Latenz: WebRTC (empfohlen)
+### 3) Niedrigere Latenz: WebRTC
 
 WebRTC liefert typischerweise die geringste End-to-End-Latenz im Browser.
 
