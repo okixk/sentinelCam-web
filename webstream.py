@@ -323,6 +323,89 @@ class StreamQuality:
             return self.snapshot()
 
 
+def _quality_snapshot(quality: Optional[StreamQuality]) -> Dict[str, Any]:
+    """Return a safe quality snapshot with sane defaults."""
+    if quality is None:
+        return StreamQuality().snapshot()
+    try:
+        return quality.snapshot()
+    except Exception:
+        return StreamQuality().snapshot()
+
+
+def _quality_output_size(frame_bgr, q: Dict[str, Any]) -> tuple[int, int]:
+    """Resolve the stream output size for a frame and quality snapshot."""
+    try:
+        src_h, src_w = frame_bgr.shape[:2]
+    except Exception:
+        src_h, src_w = 480, 640
+
+    base_w = int(q.get("target_w") or src_w)
+    base_h = int(q.get("target_h") or src_h)
+
+    try:
+        scale = float(q.get("scale") or 1.0)
+    except Exception:
+        scale = 1.0
+    if not (scale == scale):  # NaN guard
+        scale = 1.0
+    if scale < 1.0:
+        scale = 1.0
+
+    out_w = int(round(base_w / scale))
+    out_h = int(round(base_h / scale))
+    return max(16, out_w), max(16, out_h)
+
+
+def _render_frame_for_quality(frame_bgr, q: Dict[str, Any]):
+    """Resize a frame to the configured stream output size."""
+    out_w, out_h = _quality_output_size(frame_bgr, q)
+    try:
+        src_h, src_w = frame_bgr.shape[:2]
+    except Exception:
+        src_h, src_w = 480, 640
+
+    if out_w == src_w and out_h == src_h:
+        return frame_bgr
+
+    interp = cv2.INTER_AREA if (out_w < src_w or out_h < src_h) else cv2.INTER_LINEAR
+    return cv2.resize(frame_bgr, (out_w, out_h), interpolation=interp)
+
+
+def _encode_mjpeg_frame(frame_bgr, q: Dict[str, Any]) -> Optional[bytes]:
+    """Encode a frame for MJPEG output using the current quality snapshot."""
+    try:
+        jpeg_quality = int(q.get("jpeg_quality") or 80)
+    except Exception:
+        jpeg_quality = 80
+    jpeg_quality = int(max(10, min(95, jpeg_quality)))
+
+    try:
+        frame_bgr = _render_frame_for_quality(frame_bgr, q)
+    except Exception:
+        pass
+
+    ok, enc = cv2.imencode(
+        ".jpg",
+        frame_bgr,
+        [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality],
+    )
+    if not ok:
+        return None
+    return enc.tobytes()
+
+
+def _quality_fps(q: Dict[str, Any], default: int = 30) -> float:
+    """Return a clamped FPS value from a quality snapshot."""
+    try:
+        fps = float(q.get("fps") or default)
+    except Exception:
+        fps = float(default)
+    if not (fps == fps):  # NaN guard
+        fps = float(default)
+    return float(max(5.0, min(60.0, fps)))
+
+
 
 # -----------------------------
 # MJPEG server (stdlib)
@@ -740,7 +823,459 @@ def _controls_html() -> str:
 """
 
 
-def _page_html(title: str, stream_label: str, codec_label: str, media_html: str, hint: str = "") -> bytes:
+def _controls_html_v2(initial_transport: str = "webrtc") -> str:
+    """Return the transport-aware control bar used by the current pages."""
+    initial_transport = "mjpeg" if str(initial_transport).lower().strip() == "mjpeg" else "webrtc"
+    return f"""
+<div class="controls" id="controls">
+  <button id="reconnect" type="button" class="muted" data-transport-only="webrtc" data-display="inline-block" title="Reconnect the WebRTC session">Reconnect</button>
+  <button id="prev" data-cmd="prev">Prev</button>
+  <button id="next" data-cmd="next">Next</button>
+  <button id="pose" data-cmd="toggle_pose">Pose: ...</button>
+  <button id="overlay" data-cmd="toggle_overlay">Overlay: ...</button>
+  <button id="infer" data-cmd="toggle_inference">Model: ...</button>
+
+  <span class="pill muted" data-display="inline-flex" style="display:inline-flex; gap:8px; align-items:center">
+    Quality:
+    <select id="qPreset">
+      <option value="auto">Auto</option>
+      <option value="low">Low</option>
+      <option value="medium">Medium</option>
+      <option value="high" selected>High</option>
+      <option value="ultra">Ultra</option>
+      <option value="custom">Custom</option>
+    </select>
+  </span>
+
+  <span id="qBitrateGroup" class="pill muted" data-transport-only="webrtc" data-display="inline-flex" style="display:inline-flex; gap:8px; align-items:center">
+    Bitrate: <input id="qBitrate" type="range" min="500" max="10000" step="50" value="2500" />
+    <span id="qBitrateVal">2500</span> kbps
+  </span>
+
+  <span id="qJpegGroup" class="pill muted" data-transport-only="mjpeg" data-display="inline-flex" style="display:inline-flex; gap:8px; align-items:center">
+    JPEG: <input id="qJpeg" type="range" min="10" max="95" step="1" value="80" />
+    <span id="qJpegVal">80</span>
+  </span>
+
+  <span class="pill muted" data-display="inline-flex" style="display:inline-flex; gap:8px; align-items:center">
+    Scale:
+    <select id="qScale">
+      <option value="1">1x</option>
+      <option value="1.5">1.5x</option>
+      <option value="2">2x</option>
+      <option value="3">3x</option>
+      <option value="4">4x</option>
+    </select>
+  </span>
+
+  <span class="pill muted" data-display="inline-flex" style="display:inline-flex; gap:8px; align-items:center">
+    FPS:
+    <select id="qFps">
+      <option value="10">10</option>
+      <option value="15">15</option>
+      <option value="24">24</option>
+      <option value="30" selected>30</option>
+      <option value="60">60</option>
+    </select>
+  </span>
+
+  <button id="stop" data-cmd="stop" class="danger">Stop</button>
+  <span class="pill muted" id="transportPill">transport: ...</span>
+  <span class="pill" id="statePill">state: ...</span>
+  <span class="pill muted" id="videoPill">video: ...</span>
+  <span class="pill muted" id="bwPill" data-transport-only="webrtc" data-display="inline-flex">server out: ... kbps</span>
+  <span class="pill warn" id="upPill" style="display:none" title=""></span>
+  <span class="pill muted" id="actionPill" style="display:none"></span>
+</div>
+<div class="muted" style="margin-top:6px">
+  Hotkeys: <code>M</code>/<code>N</code> preset · <code>P</code> pose · <code>O</code> overlay · <code>I</code> model · <code>Q</code> stop
+</div>
+
+<script>
+(() => {{
+  const byId = (id) => document.getElementById(id);
+
+  const btnIds = ["prev","next","pose","overlay","infer","stop"];
+  const statePill = byId("statePill");
+  const transportPill = byId("transportPill");
+  const videoPill = byId("videoPill");
+  const bwPill = byId("bwPill");
+  const upPill = byId("upPill");
+  const actionPill = byId("actionPill");
+
+  const qPreset = byId("qPreset");
+  const qBitrate = byId("qBitrate");
+  const qBitrateVal = byId("qBitrateVal");
+  const qJpeg = byId("qJpeg");
+  const qJpegVal = byId("qJpegVal");
+  const qScale = byId("qScale");
+  const qFps = byId("qFps");
+
+  let activeTransport = "{initial_transport}";
+  let seq = 0;
+  let inflight = null;
+  const q = [];
+  let qDebounce = null;
+  let qDirtyUntil = 0;
+
+  const PRESETS = {{
+    auto:   {{ preset:"auto" }},
+    low:    {{ preset:"low",    bitrate_kbps: 500,   scale: 2.0, fps: 15, target_w: 640,  target_h: 360 }},
+    medium: {{ preset:"medium", bitrate_kbps: 1200,  scale: 1.0, fps: 24, target_w: 960,  target_h: 540 }},
+    high:   {{ preset:"high",   bitrate_kbps: 2500,  scale: 1.0, fps: 30, target_w: 1280, target_h: 720 }},
+    ultra:  {{ preset:"ultra",  bitrate_kbps: 8000,  scale: 1.0, fps: 30, target_w: 1920, target_h: 1080 }},
+    custom: {{ preset:"custom" }},
+  }};
+
+  function setTransport(mode) {{
+    activeTransport = (String(mode || "").toLowerCase() === "mjpeg") ? "mjpeg" : "webrtc";
+    document.documentElement.dataset.transport = activeTransport;
+    for (const el of document.querySelectorAll("[data-transport-only]")) {{
+      const want = String(el.getAttribute("data-transport-only") || "").toLowerCase();
+      const display = el.getAttribute("data-display") || "";
+      el.style.display = (want === activeTransport) ? display : "none";
+    }}
+    if (transportPill) transportPill.textContent = "transport: " + activeTransport.toUpperCase();
+    if (bwPill && activeTransport !== "webrtc") bwPill.textContent = "server out: n/a";
+  }}
+
+  window.__sentinelSetTransport = setTransport;
+
+  function setBusy(isBusy) {{
+    for (const id of btnIds) {{
+      const b = byId(id);
+      if (!b) continue;
+      if (id === "stop") continue;
+      b.disabled = !!isBusy;
+    }}
+  }}
+
+  function showAction(text) {{
+    if (!actionPill) return;
+    if (!text) {{
+      actionPill.style.display = "none";
+      actionPill.textContent = "";
+      return;
+    }}
+    actionPill.style.display = "inline-flex";
+    actionPill.textContent = text;
+  }}
+
+  async function postCmd(cmd) {{
+    seq += 1;
+    q.push({{ cmd, seq }});
+    pump();
+  }}
+
+  async function pump() {{
+    if (inflight || q.length === 0) return;
+    inflight = q.shift();
+    setBusy(true);
+    showAction("pending: " + inflight.cmd);
+
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 4000);
+
+    try {{
+      const r = await fetch("/api/cmd", {{
+        method: "POST",
+        headers: {{"Content-Type":"application/json"}},
+        body: JSON.stringify(inflight),
+        signal: controller.signal
+      }});
+      if (!r.ok) throw new Error("cmd " + r.status);
+    }} catch (e) {{
+      console.warn("cmd failed", e);
+      showAction("error: " + inflight.cmd);
+      setTimeout(() => showAction(""), 1200);
+      inflight = null;
+      setBusy(false);
+      setTimeout(pump, 0);
+    }} finally {{
+      clearTimeout(t);
+    }}
+  }}
+
+  function setSelectValue(sel, val) {{
+    if (!sel) return;
+    const s = String(val);
+    for (const o of sel.options) {{
+      if (o.value === s) {{
+        sel.value = s;
+        return;
+      }}
+    }}
+    sel.value = s;
+  }}
+
+  function readQualityFromUI() {{
+    const preset = (qPreset && qPreset.value) ? qPreset.value : "high";
+    const bitrate = qBitrate ? Number(qBitrate.value || 2500) : 2500;
+    const jpeg = qJpeg ? Number(qJpeg.value || 80) : 80;
+    const scale = qScale ? Number(qScale.value || 1) : 1;
+    const fps = qFps ? Number(qFps.value || 30) : 30;
+    let tw = null;
+    let th = null;
+    const p = PRESETS[preset] || null;
+    if (p && preset !== "custom" && p.target_w && p.target_h) {{
+      tw = p.target_w;
+      th = p.target_h;
+    }}
+    return {{
+      preset,
+      bitrate_kbps: bitrate,
+      jpeg_quality: jpeg,
+      scale,
+      fps,
+      target_w: tw,
+      target_h: th
+    }};
+  }}
+
+  async function postQuality(payload) {{
+    qDirtyUntil = Date.now() + 1200;
+    showAction("pending: quality");
+
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 2500);
+
+    try {{
+      const r = await fetch("/api/quality", {{
+        method: "POST",
+        headers: {{"Content-Type":"application/json"}},
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      }});
+      if (!r.ok) throw new Error("quality " + r.status);
+      const js = await r.json().catch(() => null);
+      if (!js || !js.ok) throw new Error("quality bad response");
+
+      applyQualityToUI(js);
+      if (js.reconnect && activeTransport === "webrtc" && typeof window.reconnectWebRTC === "function") {{
+        showAction("reconnecting...");
+        try {{
+          await window.reconnectWebRTC(false);
+          showAction("ok: reconnected");
+          setTimeout(() => showAction(""), 800);
+        }} catch (e2) {{
+          console.warn("reconnect failed", e2);
+          showAction("error: reconnect");
+          setTimeout(() => showAction(""), 1500);
+        }}
+      }} else {{
+        showAction("ok: quality");
+        setTimeout(() => showAction(""), 700);
+      }}
+    }} catch (e) {{
+      console.warn("quality failed", e);
+      showAction("error: quality");
+      setTimeout(() => showAction(""), 1200);
+    }} finally {{
+      clearTimeout(t);
+    }}
+  }}
+
+  function scheduleQualityPush(payload) {{
+    if (qDebounce) clearTimeout(qDebounce);
+    qDebounce = setTimeout(() => postQuality(payload), 180);
+  }}
+
+  function applyQualityToUI(qs) {{
+    if (!qs || Date.now() < qDirtyUntil) return;
+    if (qPreset) setSelectValue(qPreset, qs.preset || "high");
+    if (qBitrate) qBitrate.value = String(qs.bitrate_kbps || 2500);
+    if (qBitrateVal) qBitrateVal.textContent = String(qs.bitrate_kbps || 2500);
+    if (qJpeg) qJpeg.value = String(qs.jpeg_quality || 80);
+    if (qJpegVal) qJpegVal.textContent = String(qs.jpeg_quality || 80);
+    if (qScale) setSelectValue(qScale, qs.scale || 1);
+    if (qFps) setSelectValue(qFps, qs.fps || 30);
+  }}
+
+  function applyState(s) {{
+    if (!s) return;
+    const preset = s.preset ?? "?";
+    const poseOn = !!s.pose_enabled;
+    const overlayOn = !!s.overlay_enabled;
+    const inferOn = !!s.inference_enabled;
+    const fps = Number(s.fps || 0);
+
+    const mode = inferOn ? "infer" : "stream-only";
+    const qtxt = s.quality ? ` | q=${{s.quality.preset || "?"}} ${{s.quality.scale || "?"}}x @${{s.quality.fps || "?"}}fps` : "";
+    if (statePill) statePill.textContent = `preset=${{preset}} | mode=${{mode}} | fps=${{fps.toFixed(1)}}${{qtxt}}`;
+
+    try {{
+      const cw = Number(s.capture_w || 0);
+      const ch = Number(s.capture_h || 0);
+      const tw = Number((s.quality && s.quality.target_w) || 0);
+      const th = Number((s.quality && s.quality.target_h) || 0);
+      const sc = Number((s.quality && s.quality.scale) || 1);
+      let ow = tw;
+      let oh = th;
+      if (tw > 0 && th > 0 && sc > 1.001) {{
+        ow = Math.max(16, Math.round(tw / sc));
+        oh = Math.max(16, Math.round(th / sc));
+      }}
+      if (upPill && cw > 0 && ch > 0 && ow > 0 && oh > 0 && (cw < ow || ch < oh)) {{
+        upPill.style.display = "inline-flex";
+        upPill.textContent = "Capture smaller than target - upscaling";
+        upPill.title = `capture=${{cw}}x${{ch}} output=${{ow}}x${{oh}} target=${{tw}}x${{th}} scale=${{sc}}x`;
+      }} else if (upPill) {{
+        upPill.style.display = "none";
+        upPill.textContent = "";
+        upPill.title = "";
+      }}
+    }} catch (e) {{}}
+
+    const poseBtn = byId("pose");
+    const overlayBtn = byId("overlay");
+    const inferBtn = byId("infer");
+
+    if (poseBtn) poseBtn.textContent = "Pose: " + (poseOn ? "ON" : "OFF");
+    if (overlayBtn) overlayBtn.textContent = "Overlay: " + (overlayOn ? "ON" : "OFF");
+    if (inferBtn) inferBtn.textContent = "Model: " + (inferOn ? "ON" : "OFF");
+
+    if (overlayBtn) overlayBtn.disabled = !inferOn || overlayBtn.disabled;
+    if (poseBtn) poseBtn.disabled = !inferOn || poseBtn.disabled;
+
+    const applied = Number(s.cmd_seq_applied || 0);
+    if (inflight && applied >= inflight.seq) {{
+      showAction("ok: " + inflight.cmd);
+      setTimeout(() => showAction(""), 600);
+      inflight = null;
+      setBusy(false);
+      setTimeout(pump, 0);
+    }}
+
+    if (s.quality) applyQualityToUI(s.quality);
+  }}
+
+  async function pollState() {{
+    try {{
+      const r = await fetch("/api/state", {{ cache: "no-store" }});
+      if (!r.ok) throw new Error("state " + r.status);
+      const s = await r.json();
+      applyState(s);
+    }} catch (e) {{
+    }} finally {{
+      setTimeout(pollState, 350);
+    }}
+  }}
+
+  for (const id of btnIds) {{
+    const b = byId(id);
+    if (!b) continue;
+    b.addEventListener("pointerdown", (ev) => {{
+      ev.preventDefault();
+      const cmd = b.getAttribute("data-cmd");
+      if (!cmd) return;
+      if (cmd === "stop") {{
+        seq += 1;
+        fetch("/api/cmd", {{
+          method:"POST",
+          headers:{{"Content-Type":"application/json"}},
+          body: JSON.stringify({{cmd:"stop", seq}})
+        }}).catch(() => {{}});
+        showAction("stopping...");
+        if (window.__sentinelOnStop) try {{ window.__sentinelOnStop(); }} catch (e) {{}}
+        return;
+      }}
+      postCmd(cmd);
+    }}, {{passive:false}});
+  }}
+
+  function onQChange() {{
+    const cur = readQualityFromUI();
+    if (qBitrateVal) qBitrateVal.textContent = String(cur.bitrate_kbps);
+    if (qJpegVal) qJpegVal.textContent = String(cur.jpeg_quality);
+    scheduleQualityPush(cur);
+  }}
+
+  if (qPreset) qPreset.addEventListener("change", () => {{
+    const sel = qPreset.value || "high";
+    const p = PRESETS[sel] || PRESETS.high;
+    if (p.bitrate_kbps && qBitrate) qBitrate.value = String(p.bitrate_kbps);
+    if (p.scale && qScale) setSelectValue(qScale, p.scale);
+    if (p.fps && qFps) setSelectValue(qFps, p.fps);
+    if (qBitrateVal && qBitrate) qBitrateVal.textContent = String(qBitrate.value);
+    scheduleQualityPush(readQualityFromUI());
+  }});
+
+  if (qBitrate) qBitrate.addEventListener("input", () => {{
+    if (qPreset) qPreset.value = "custom";
+    if (qBitrateVal) qBitrateVal.textContent = String(qBitrate.value);
+  }});
+  if (qBitrate) qBitrate.addEventListener("change", () => {{
+    if (qPreset) qPreset.value = "custom";
+    onQChange();
+  }});
+  if (qJpeg) qJpeg.addEventListener("input", () => {{
+    if (qPreset) qPreset.value = "custom";
+    if (qJpegVal) qJpegVal.textContent = String(qJpeg.value);
+  }});
+  if (qJpeg) qJpeg.addEventListener("change", () => {{
+    if (qPreset) qPreset.value = "custom";
+    onQChange();
+  }});
+  if (qScale) qScale.addEventListener("change", () => {{
+    if (qPreset) qPreset.value = "custom";
+    onQChange();
+  }});
+  if (qFps) qFps.addEventListener("change", () => {{
+    if (qPreset) qPreset.value = "custom";
+    onQChange();
+  }});
+
+  window.addEventListener("keydown", (ev) => {{
+    const k = (ev.key || "").toLowerCase();
+    if (k === "m") postCmd("next");
+    else if (k === "n") postCmd("prev");
+    else if (k === "p") postCmd("toggle_pose");
+    else if (k === "o") postCmd("toggle_overlay");
+    else if (k === "i") postCmd("toggle_inference");
+    else if (k === "q") {{
+      seq += 1;
+      fetch("/api/cmd", {{
+        method:"POST",
+        headers:{{"Content-Type":"application/json"}},
+        body: JSON.stringify({{cmd:"stop", seq}})
+      }}).catch(() => {{}});
+      showAction("stopping...");
+      if (window.__sentinelOnStop) try {{ window.__sentinelOnStop(); }} catch (e) {{}}
+    }}
+  }});
+
+  setInterval(() => {{
+    try {{
+      if (!videoPill) return;
+      const v = byId("v");
+      if (v && v.videoWidth && v.videoHeight) {{
+        videoPill.textContent = `video=${{v.videoWidth}}x${{v.videoHeight}}`;
+        return;
+      }}
+      const im = document.querySelector("img");
+      if (im && im.naturalWidth && im.naturalHeight) {{
+        videoPill.textContent = `img=${{im.naturalWidth}}x${{im.naturalHeight}}`;
+        return;
+      }}
+      videoPill.textContent = "video: ...";
+    }} catch (e) {{}}
+  }}, 600);
+
+  setTransport(activeTransport);
+  pollState();
+}})();
+</script>
+"""
+
+
+def _page_html(
+    title: str,
+    stream_label: str,
+    codec_label: str,
+    media_html: str,
+    hint: str = "",
+    initial_transport: str = "webrtc",
+) -> bytes:
     """Build a complete HTML page for either MJPEG or WebRTC mode.
 
     Assembles the header/chrome, the media element placeholder, and the
@@ -779,7 +1314,7 @@ def _page_html(title: str, stream_label: str, codec_label: str, media_html: str,
       </div>
       <h2 style="margin:10px 0 10px">{title}</h2>
       {media_html}
-      {_controls_html()}
+      {_controls_html_v2(initial_transport=(initial_transport or str(stream_label).lower()))}
       {hint}
     </div>
   </body>
@@ -841,13 +1376,23 @@ class _MjpegHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "control_disabled"}, status=503)
                 return
             s = self.control.get_state()
+            cw = ch = 0
+            try:
+                pkt = self.hub.latest()
+                if pkt is not None and getattr(pkt, "bgr", None) is not None:
+                    ch, cw = pkt.bgr.shape[:2]
+            except Exception:
+                pass
+            s["capture_w"] = int(cw)
+            s["capture_h"] = int(ch)
+            s["quality"] = _quality_snapshot(self.quality)
             s["ok"] = True
             self._send_json(s)
             return
 
         if self.path.startswith("/api/quality"):
             try:
-                self._send_json({"ok": True, **(self.quality.snapshot() if self.quality else {})})
+                self._send_json({"ok": True, **_quality_snapshot(self.quality)})
             except Exception:
                 self._send_json({"ok": False, "error": "quality_unavailable"}, status=503)
             return
@@ -857,20 +1402,11 @@ class _MjpegHandler(BaseHTTPRequestHandler):
             if pkt is None:
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "no frame yet")
                 return
-            self.send_response(HTTPStatus.OK)
-            q = self.quality.snapshot() if self.quality else {"jpeg_quality": 80, "scale": 1.0}
-            frame = pkt.bgr
-            scale = float(q.get("scale") or 1.0)
-            try:
-                if scale > 1.001:
-                    frame = cv2.resize(frame, None, fx=1.0/scale, fy=1.0/scale, interpolation=cv2.INTER_AREA)
-            except Exception:
-                frame = pkt.bgr
-            ok, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(q.get("jpeg_quality") or 80)])
-            if not ok:
+            q = _quality_snapshot(self.quality)
+            jpg = _encode_mjpeg_frame(pkt.bgr, q)
+            if jpg is None:
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "encode failed")
                 return
-            jpg = enc.tobytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "image/jpeg")
             self.send_header("Content-Length", str(len(jpg)))
@@ -893,28 +1429,25 @@ class _MjpegHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
             last_ts = 0.0
+            next_due = 0.0
             try:
                 while True:
                     pkt = self.hub.wait(after_ts=last_ts, timeout=5.0)
                     if pkt is None:
                         continue
                     last_ts = pkt.ts
-                    q = self.quality.snapshot() if self.quality else {"jpeg_quality": 80, "scale": 1.0}
-                    frame = pkt.bgr
-                    scale = float(q.get("scale") or 1.0)
-                    try:
-                        if scale > 1.001:
-                            frame = cv2.resize(frame, None, fx=1.0/scale, fy=1.0/scale, interpolation=cv2.INTER_AREA)
-                    except Exception:
-                        frame = pkt.bgr
-                    ok, enc = cv2.imencode(
-                        ".jpg",
-                        frame,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), int(q.get("jpeg_quality") or 80)],
-                    )
-                    if not ok:
+                    q = _quality_snapshot(self.quality)
+                    now = time.monotonic()
+                    if next_due == 0.0:
+                        next_due = now
+                    sleep_for = next_due - now
+                    if sleep_for > 0:
+                        time.sleep(sleep_for)
+                    next_due = max(next_due + (1.0 / _quality_fps(q)), time.monotonic())
+
+                    jpg = _encode_mjpeg_frame(pkt.bgr, q)
+                    if jpg is None:
                         continue
-                    jpg = enc.tobytes()
 
                     self.wfile.write(f"--{boundary}\r\n".encode("ascii"))
                     self.wfile.write(b"Content-Type: image/jpeg\r\n")
@@ -940,7 +1473,12 @@ class _MjpegHandler(BaseHTTPRequestHandler):
                 data = {}
             try:
                 qs = self.quality.update_from(data) if self.quality else {}
-                self._send_json({"ok": True, **qs})
+                try:
+                    if "jpeg_quality" in qs and hasattr(self.hub, "set_jpeg_quality"):
+                        self.hub.set_jpeg_quality(int(qs.get("jpeg_quality") or 80))
+                except Exception:
+                    pass
+                self._send_json({"ok": True, "reconnect": False, **qs})
             except Exception:
                 self._send_json({"ok": False, "error": "quality_update_failed"}, status=500)
             return
@@ -990,6 +1528,7 @@ def run_mjpeg_server(
     port: int,
     title: str = "sentinelCam",
     control: Optional[ControlAPI] = None,
+    quality: Optional[StreamQuality] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Start a blocking MJPEG HTTP server (stdlib only, no extra deps).
@@ -999,7 +1538,7 @@ def run_mjpeg_server(
     Runs until *stop_event* is set (if provided), then shuts down.
     """
 
-    quality = StreamQuality()
+    quality = quality or StreamQuality()
 
     # Dynamic handler factory: each request gets a fresh handler class
     # whose class-level attributes point to the shared hub/control/quality.
@@ -1157,6 +1696,7 @@ async def run_webrtc_server(
     codec: str = "auto",
     title: str = "sentinelCam",
     control: Optional[ControlAPI] = None,
+    quality: Optional[StreamQuality] = None,
     stop_event: Optional[threading.Event] = None,
     advertise_ip: str = "",
     rtc_min_port: int = 0,
@@ -1343,7 +1883,7 @@ async def run_webrtc_server(
 
         return "\r\n".join(out) + "\r\n"
     closing = False       # set True during shutdown; rejects new offers
-    quality = StreamQuality()  # shared quality state; updated by /api/quality
+    quality = quality or StreamQuality()  # shared quality state; updated by /api/quality
 
     # NOTE ABOUT BITRATE CONTROL:
     #
@@ -1424,6 +1964,7 @@ async def run_webrtc_server(
     // For localhost/lan usage, host-candidates are enough and we avoid STUN.
     // (Also reduces noisy timeouts on some networks.)
     await closePc();
+    if (window.__sentinelSetTransport) window.__sentinelSetTransport('webrtc');
     const pc = new RTCPeerConnection({ iceServers: [] });
     __pc = pc;
     __lastFrameAt = Date.now();
@@ -1527,6 +2068,7 @@ async def run_webrtc_server(
         img.setAttribute('src', ds);
       }
     } catch(e) {}
+    if (window.__sentinelSetTransport) window.__sentinelSetTransport('mjpeg');
     byId('v').style.display = 'none';
     byId('fallback').style.display = 'block';
     setStatus('fallback=MJPEG');
@@ -1551,6 +2093,8 @@ async def run_webrtc_server(
       __reconnecting = false;
     }
   }
+
+  window.reconnectWebRTC = reconnectWebRTC;
 
 
   // Start
@@ -1598,23 +2142,24 @@ async def run_webrtc_server(
             self._pts = 0                      # running presentation timestamp counter (90 kHz clock)
             try:
                 q = self._quality.snapshot() if self._quality else {}
-                self._fps = float(q.get("fps") or 30.0)
+                self._target_fps = float(q.get("fps") or 30.0)
                 self._scale = float(q.get("scale") or 1.0)
                 tw = q.get("target_w")
                 th = q.get("target_h")
                 self._target_w = int(tw) if tw else None
                 self._target_h = int(th) if th else None
             except Exception:
-                self._fps = 30.0
+                self._target_fps = 30.0
                 self._scale = 1.0
                 self._target_w = None
                 self._target_h = None
-            self._fps = float(max(5.0, min(60.0, self._fps)))
+            self._target_fps = float(max(5.0, min(60.0, self._target_fps)))
+            self._send_fps = float(self._target_fps)
             # NaN guard: if scale is NaN (comparison with itself fails), reset to 1.0
             if not (self._scale == self._scale):
                 self._scale = 1.0
             self._scale = float(max(1.0, min(4.0, self._scale)))
-            self._pts_step = int(90000 / self._fps)  # PTS increment per frame (90 kHz RTP clock)
+            self._pts_step = int(90000 / self._send_fps)  # PTS increment per frame (90 kHz RTP clock)
             self._next_due = 0.0  # loop.time() when next frame should be emitted
 
         async def recv(self):
@@ -1639,7 +2184,7 @@ async def run_webrtc_server(
             sleep_for = self._next_due - now
             if sleep_for > 0:
                 await asyncio.sleep(sleep_for)
-            self._next_due = max(self._next_due + (1.0 / self._fps), loop.time())
+            self._next_due = max(self._next_due + (1.0 / self._send_fps), loop.time())
 
             # Non-blocking: grab the latest frame if available.
             pkt = hub.latest()
@@ -1670,13 +2215,13 @@ async def run_webrtc_server(
             src_fps = None
             if self._src_dt_ema and self._src_dt_ema > 0:
                 src_fps = max(5.0, min(60.0, 1.0 / float(self._src_dt_ema)))
-            eff_fps = float(self._fps)
+            eff_fps = float(self._target_fps)
             if src_fps is not None:
                 eff_fps = float(min(eff_fps, src_fps))
             # Update pacing only when it changed meaningfully.
-            if abs(eff_fps - float(self._fps)) > 0.25:
-                self._fps = float(max(5.0, min(60.0, eff_fps)))
-                self._pts_step = int(90000 / self._fps)
+            if abs(eff_fps - float(self._send_fps)) > 0.25:
+                self._send_fps = float(max(5.0, min(60.0, eff_fps)))
+                self._pts_step = int(90000 / self._send_fps)
                 self._next_due = loop.time()
 
             # Convert only when we have a new source frame or the scale changed.
@@ -1750,6 +2295,7 @@ async def run_webrtc_server(
         )
         await resp.prepare(_request)
         last_ts = 0.0
+        next_due = 0.0
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
@@ -1759,7 +2305,17 @@ async def run_webrtc_server(
                     await asyncio.sleep(0.01)
                     continue
                 last_ts = pkt.ts
-                jpg = pkt.jpg
+                q = _quality_snapshot(quality)
+                now = asyncio.get_running_loop().time()
+                if next_due == 0.0:
+                    next_due = now
+                sleep_for = next_due - now
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                next_due = max(next_due + (1.0 / _quality_fps(q)), asyncio.get_running_loop().time())
+                jpg = _encode_mjpeg_frame(pkt.bgr, q)
+                if jpg is None:
+                    continue
                 await resp.write(f"--{boundary}\r\n".encode("ascii"))
                 await resp.write(b"Content-Type: image/jpeg\r\n")
                 await resp.write(f"Content-Length: {len(jpg)}\r\n\r\n".encode("ascii"))
