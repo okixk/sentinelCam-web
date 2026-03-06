@@ -23,7 +23,7 @@ Beim Installieren wird auch eine Testinstanz gestartet. Diese kann nach dem Inst
 
 Dann im Browser öffnen:
 
-* `http://<host>:8080/`
+* `http://localhost:8080/`
 
 MJPEG ist sehr kompatibel, aber nicht der effizienteste Codec.
 
