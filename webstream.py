@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import random
 import threading
 import time
@@ -66,8 +67,9 @@ class FrameHub:
 
     def __init__(self, jpeg_quality: int = 80):
         self._lock = threading.Lock()
-        self._cv = threading.Condition(self._lock)
+        self._cv = threading.Condition(self._lock)  # guards _pkt; used to wake blocking waiters
         self._pkt: Optional[FramePacket] = None
+        # Clamp quality to a sensible range (10–95) to avoid encoder edge-cases.
         self._jpeg_quality = int(max(10, min(95, jpeg_quality)))
 
         # Optional asyncio bridge (used by WebRTC).
@@ -140,13 +142,16 @@ class FrameHub:
         """Wait for a frame newer than after_ts."""
         end = time.time() + timeout
         with self._cv:
+            # Spin until a newer frame arrives or the deadline expires.
+            # Each iteration re-checks _pkt; Condition.wait() releases
+            # the lock while sleeping, so the producer can call update().
             while True:
                 pkt = self._pkt
                 if pkt is not None and pkt.ts > after_ts:
                     return pkt
                 remaining = end - time.time()
                 if remaining <= 0:
-                    return pkt
+                    return pkt  # timed out – return whatever we have (may be None)
                 self._cv.wait(timeout=remaining)
 
     async def wait_async(self, after_ts: float, timeout: float = 5.0) -> Optional[FramePacket]:
@@ -347,13 +352,14 @@ def _quality_output_size(frame_bgr, q: Dict[str, Any]) -> tuple[int, int]:
         scale = float(q.get("scale") or 1.0)
     except Exception:
         scale = 1.0
-    if not (scale == scale):  # NaN guard
+    if math.isnan(scale):
         scale = 1.0
     if scale < 1.0:
         scale = 1.0
 
     out_w = int(round(base_w / scale))
     out_h = int(round(base_h / scale))
+    # Minimum 16px to prevent degenerate encoder states.
     return max(16, out_w), max(16, out_h)
 
 
@@ -366,8 +372,9 @@ def _render_frame_for_quality(frame_bgr, q: Dict[str, Any]):
         src_h, src_w = 480, 640
 
     if out_w == src_w and out_h == src_h:
-        return frame_bgr
+        return frame_bgr  # no resize needed – avoid unnecessary copy
 
+    # INTER_AREA is best for down-scaling (anti-alias), INTER_LINEAR for up-scaling.
     interp = cv2.INTER_AREA if (out_w < src_w or out_h < src_h) else cv2.INTER_LINEAR
     return cv2.resize(frame_bgr, (out_w, out_h), interpolation=interp)
 
@@ -401,10 +408,10 @@ def _quality_fps(q: Dict[str, Any], default: int = 30) -> float:
         fps = float(q.get("fps") or default)
     except Exception:
         fps = float(default)
-    if not (fps == fps):  # NaN guard
+    if math.isnan(fps):
         fps = float(default)
+    # Enforce hard bounds (5–60) to prevent runaway CPU usage or frozen video.
     return float(max(5.0, min(60.0, fps)))
-
 
 
 # -----------------------------
@@ -495,13 +502,13 @@ def _controls_html() -> str:
   const qScale = byId("qScale");
   const qFps = byId("qFps");
 
-  let seq = 0;
-  let inflight = null;
-  const q = [];
+  let seq = 0;            // monotonically increasing command sequence number
+  let inflight = null;    // the command currently being sent to the server
+  const q = [];           // pending command queue (FIFO)
 
-  // Quality debounce
+  // Quality debounce: prevents flooding the server with rapid slider changes.
   let qDebounce = null;
-  let qDirtyUntil = 0;
+  let qDirtyUntil = 0;  // timestamp until which we skip server->UI quality sync
 
   const PRESETS = {
     auto:   { preset:"auto" },
@@ -1421,6 +1428,9 @@ class _MjpegHandler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/mjpeg"):
+            # MJPEG: long-lived HTTP response using multipart/x-mixed-replace.
+            # Each frame is sent as a separate MIME part delimited by "--frame".
+            # The browser's <img> tag natively understands this format.
             self.send_response(HTTPStatus.OK)
             boundary = "frame"
             self.send_header("Cache-Control", "no-cache, private")
@@ -1542,6 +1552,8 @@ def run_mjpeg_server(
 
     # Dynamic handler factory: each request gets a fresh handler class
     # whose class-level attributes point to the shared hub/control/quality.
+    # We create a new class per request (instead of setting class attrs on
+    # _MjpegHandler) to guarantee thread safety with ThreadingHTTPServer.
     def handler_factory(*_a, **_k):
         cls = type("MjpegHandler", (_MjpegHandler,), {})
         cls.hub = hub
@@ -1551,7 +1563,7 @@ def run_mjpeg_server(
         return cls(*_a, **_k)
 
     httpd = ThreadingHTTPServer((host, int(port)), handler_factory)
-    httpd.timeout = 0.5
+    httpd.timeout = 0.5  # short timeout so the server loop can check stop_event frequently
     try:
         while stop_event is None or (not stop_event.is_set()):
             httpd.handle_request()
@@ -1618,7 +1630,9 @@ def _install_udp_port_range_patch(loop: asyncio.AbstractEventLoop, min_port: int
             and local_addr[1] == 0
         ):
             host = local_addr[0]
-            # Try a number of random ports.
+            # Try up to 200 random ports in the allowed range.
+            # 200 attempts is generous enough to handle moderate port contention
+            # while still failing fast if the range is fully exhausted.
             for _ in range(200):
                 port = random.randint(min_port, max_port)
                 try:
@@ -1806,7 +1820,7 @@ async def run_webrtc_server(
     loop.set_exception_handler(_exc_handler)
 
     pcs = set()           # active RTCPeerConnections (for cleanup on shutdown)
-    offer_lock = asyncio.Lock()  # serialise SDP offer handling to avoid races
+    offer_lock = asyncio.Lock()  # serialise SDP offer handling to avoid encoder DEFAULT_BITRATE races
 
     def _munge_sdp_bandwidth(sdp: str, kbps: int) -> str:
         """Insert/replace bandwidth limits in the video m-section.
@@ -1882,8 +1896,8 @@ async def run_webrtc_server(
                 out = out2
 
         return "\r\n".join(out) + "\r\n"
-    closing = False       # set True during shutdown; rejects new offers
-    quality = quality or StreamQuality()  # shared quality state; updated by /api/quality
+    closing = False       # set True during shutdown; rejects new /offer requests
+    quality = quality or StreamQuality()  # shared quality state; mutated by /api/quality, read by tracks
 
     # NOTE ABOUT BITRATE CONTROL:
     #
@@ -2136,10 +2150,10 @@ async def run_webrtc_server(
             self._scale = 1.0
             self._target_w = None
             self._target_h = None
-            self._last_vf_src_ts = 0.0       # timestamp of last converted VideoFrame
+            self._last_vf_src_ts = 0.0       # timestamp of last converted VideoFrame (avoid redundant av.VideoFrame.from_ndarray)
             self._last_pkt_ts_for_fps = 0.0   # last packet timestamp used for source FPS estimation
-            self._src_dt_ema = None            # exponential moving average of source frame interval (seconds)
-            self._pts = 0                      # running presentation timestamp counter (90 kHz clock)
+            self._src_dt_ema = None            # exponential moving average of source frame interval (seconds); None until first measurement
+            self._pts = 0                      # running presentation timestamp counter (90 kHz RTP clock)
             try:
                 q = self._quality.snapshot() if self._quality else {}
                 self._target_fps = float(q.get("fps") or 30.0)
@@ -2155,7 +2169,7 @@ async def run_webrtc_server(
                 self._target_h = None
             self._target_fps = float(max(5.0, min(60.0, self._target_fps)))
             self._send_fps = float(self._target_fps)
-            # NaN guard: if scale is NaN (comparison with itself fails), reset to 1.0
+            # NaN guard: if scale is NaN (IEEE 754: NaN != NaN), reset to 1.0
             if not (self._scale == self._scale):
                 self._scale = 1.0
             self._scale = float(max(1.0, min(4.0, self._scale)))
@@ -2194,6 +2208,7 @@ async def run_webrtc_server(
                 self._last_bgr = pkt.bgr
 
                 # Estimate source FPS (EMA) so we don't oversend duplicates.
+                # Uses a 0.9/0.1 exponential moving average to smooth out jitter.
                 if self._last_pkt_ts_for_fps > 0:
                     dt = float(pkt.ts - self._last_pkt_ts_for_fps)
                     if 0.001 < dt < 1.0:
@@ -2211,7 +2226,9 @@ async def run_webrtc_server(
                 frame = _np.zeros((480, 640, 3), dtype=_np.uint8)
                 self._last_bgr = frame
 
-            # Cap effective output FPS to source FPS (prevents CPU death-spiral on Windows).
+            # Cap effective output FPS to source FPS (prevents CPU death-spiral
+            # on Windows where encoding faster than the camera produces frames
+            # wastes CPU re-encoding identical images).
             src_fps = None
             if self._src_dt_ema and self._src_dt_ema > 0:
                 src_fps = max(5.0, min(60.0, 1.0 / float(self._src_dt_ema)))
@@ -2535,7 +2552,11 @@ async def run_webrtc_server(
                 return web.json_response({"ok": False, "error": "offer_failed", "detail": msg[:200]}, status=500)
 
     async def on_shutdown(app):
-        """Close all active PeerConnections during graceful server shutdown."""
+        """Close all active PeerConnections during graceful server shutdown.
+
+        Holds offer_lock to prevent new connections from being set up
+        concurrently while we're tearing down existing ones.
+        """
         nonlocal closing
         closing = True
         async with offer_lock:

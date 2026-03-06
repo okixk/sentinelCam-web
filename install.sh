@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# ============================================================
+# install.sh – Unix/macOS installer for sentinelCam-worker deps
+#
+# This script checks whether the required worker files already
+# exist. If not, it clones the sentinelCam-worker repository
+# into a temporary folder, copies the needed files, cleans up,
+# and optionally starts the worker via run.sh.
+# ============================================================
+
 # 1. Check if all required files are already present
 ALL_PRESENT=true
 for FILE in webcam.py webcam.properties run.sh run.bat; do
@@ -41,7 +50,7 @@ done
 # 5. Delete temp folder
 rm -rf _temp_clone
 
-# 6. Set permissions for copied files
+# 6. Set permissions for copied files (ensure current user owns them and can read/write)
 for FILE in webcam.py webcam.properties run.sh run.bat; do
     if [ -f "$FILE" ]; then
         chown "$(id -u):$(id -g)" "$FILE"
@@ -51,7 +60,7 @@ done
 
 echo "Dependencies erfolgreich installiert."
 
-# 8. Start run.sh
+# 8. Start run.sh with default WebRTC streaming settings
 echo "Starte run.sh..."
 bash run.sh --web --stream webrtc --port 8080 --webrtc-codec auto
 
