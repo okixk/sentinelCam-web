@@ -905,6 +905,7 @@ def _controls_html_v2(initial_transport: str = "webrtc") -> str:
   const btnIds = ["prev","next","pose","overlay","infer","stop"];
   const statePill = byId("statePill");
   const transportPill = byId("transportPill");
+  const streamPill = byId("streamPill");
   const videoPill = byId("videoPill");
   const bwPill = byId("bwPill");
   const upPill = byId("upPill");
@@ -942,6 +943,7 @@ def _controls_html_v2(initial_transport: str = "webrtc") -> str:
       const display = el.getAttribute("data-display") || "";
       el.style.display = (want === activeTransport) ? display : "none";
     }}
+    if (streamPill) streamPill.textContent = "Stream: " + activeTransport.toUpperCase();
     if (transportPill) transportPill.textContent = "transport: " + activeTransport.toUpperCase();
     if (bwPill && activeTransport !== "webrtc") bwPill.textContent = "server out: n/a";
   }}
@@ -1316,7 +1318,7 @@ def _page_html(
     <div class="wrap">
       <div class="row">
         <div class="pill">sentinelCam</div>
-        <div class="pill">Stream: {stream_label}</div>
+        <div class="pill" id="streamPill">Stream: {stream_label}</div>
         <div class="pill">Codec: <code>{codec_label}</code></div>
       </div>
       <h2 style="margin:10px 0 10px">{title}</h2>
