@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sentinelCam web</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 24px; }
+      img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 12px; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+      input, button { padding: 8px 10px; font: inherit; }
+      input { min-width: 320px; }
+    </style>
+  </head>
+  <body>
+    <h1>sentinelCam web</h1>
+    <div class="row">
+      <input id="base" value="http://127.0.0.1:8080" />
+      <button onclick="connect()">Connect</button>
+      <button onclick="sendCmd('m')">Prev model</button>
+      <button onclick="sendCmd('n')">Next model</button>
+      <button onclick="sendCmd('p')">Pose</button>
+      <button onclick="sendCmd('o')">Overlay</button>
+      <button onclick="sendCmd('i')">Inference</button>
+      <button onclick="sendCmd('q')">Quit</button>
+    </div>
+    <p id="status"></p>
+    <img id="stream" alt="sentinelCam stream" />
+    <script>
+      function base() { return document.getElementById('base').value.replace(/\/+$/, ''); }
+      function connect() {
+        const url = base() + '/stream.mjpg';
+        document.getElementById('stream').src = url;
+        document.getElementById('status').textContent = 'Connected to ' + url;
+      }
+      async function sendCmd(cmd) {
+        try {
+          const r = await fetch(base() + '/api/cmd', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cmd })
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+        } catch (e) {
+          document.getElementById('status').textContent = 'Command failed: ' + e;
+        }
+      }
+      connect();
+    </script>
+  </body>
+</html>
