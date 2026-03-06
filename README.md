@@ -2,7 +2,7 @@
 
 ## Web-Ausgabe (Browser)
 
-Standardmäßig zeigt `webcam.py` das Ergebnis in einem OpenCV-Fenster.
+Standardmässig zeigt `webcam.py` das Ergebnis in einem OpenCV-Fenster.
 Wenn du es **headless** (z.B. auf einem Server/RPi) laufen lassen willst, kannst du den Stream auf einer Webseite anzeigen:
 
 ### 1) Installation
