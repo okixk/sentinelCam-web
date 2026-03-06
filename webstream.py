@@ -67,7 +67,7 @@ class FrameHub:
 
     def __init__(self, jpeg_quality: int = 80):
         self._lock = threading.Lock()
-        self._cv = threading.Condition(self._lock)  # guards _pkt; used to wake blocking waiters
+        self._cv = threading.Condition(self._lock)  # threading.Condition wraps _lock and guards _pkt; used to wake blocking waiters
         self._pkt: Optional[FramePacket] = None
         # Clamp quality to a sensible range (10–95) to avoid encoder edge-cases.
         self._jpeg_quality = int(max(10, min(95, jpeg_quality)))
@@ -1631,13 +1631,14 @@ def _install_udp_port_range_patch(loop: asyncio.AbstractEventLoop, min_port: int
         ):
             host = local_addr[0]
             # Try up to 200 random ports in the allowed range.
-            # 200 attempts is generous enough to handle moderate port contention
-            # while still failing fast if the range is fully exhausted.
+            # 200 attempts is generous enough to handle moderate port contention,
+            # and if the range still appears exhausted we fall back to the
+            # OS-selected port (see below).
             for _ in range(200):
                 port = random.randint(min_port, max_port)
+                kwargs2 = dict(kwargs)
+                kwargs2["local_addr"] = (host, port)
                 try:
-                    kwargs2 = dict(kwargs)
-                    kwargs2["local_addr"] = (host, port)
                     return await orig(protocol_factory, *args, **kwargs2)
                 except OSError as e:
                     err = getattr(e, "errno", None)
@@ -2208,7 +2209,9 @@ async def run_webrtc_server(
                 self._last_bgr = pkt.bgr
 
                 # Estimate source FPS (EMA) so we don't oversend duplicates.
-                # Uses a 0.9/0.1 exponential moving average to smooth out jitter.
+                # Uses a 0.9/0.1 exponential moving average: heavily weights recent
+                # intervals for responsiveness while still smoothing out jitter in
+                # the source frame timing.
                 if self._last_pkt_ts_for_fps > 0:
                     dt = float(pkt.ts - self._last_pkt_ts_for_fps)
                     if 0.001 < dt < 1.0:
