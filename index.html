@@ -95,11 +95,28 @@
         border-radius: 16px;
         border: 1px solid var(--border);
         background: #000;
+        aspect-ratio: 16 / 9;
       }
       img {
         display: block;
         width: 100%;
-        height: auto;
+        height: 100%;
+        object-fit: contain;
+      }
+      .stream-placeholder {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 20px;
+        color: var(--muted);
+        background: rgba(0, 0, 0, 0.55);
+        z-index: 1;
+      }
+      .stream-placeholder.hidden {
+        display: none;
       }
       .busy-overlay {
         position: absolute;
@@ -207,6 +224,7 @@
             <div class="progress"></div>
           </div>
         </div>
+        <div id="streamPlaceholder" class="stream-placeholder">Connecting…</div>
         <img id="stream" alt="sentinelCam stream" />
       </div>
     </div>
@@ -217,9 +235,18 @@
       let cmdSeq = 0;
       let pendingSwitch = null;
       let lastPollErrorText = '';
+      let intentionalDisconnect = false;
 
       function base() {
         return document.getElementById('base').value.replace(/\/+$/, '');
+      }
+
+      function streamEl() {
+        return document.getElementById('stream');
+      }
+
+      function placeholderEl() {
+        return document.getElementById('streamPlaceholder');
       }
 
       function setStatus(text, isError = false) {
@@ -234,6 +261,37 @@
         overlay.classList.toggle('show', !!on);
         document.getElementById('btnPrev').disabled = !!on;
         document.getElementById('btnNext').disabled = !!on;
+      }
+
+      function setPlaceholder(text = 'Not connected.', show = true) {
+        const el = placeholderEl();
+        el.textContent = text;
+        el.classList.toggle('hidden', !show);
+      }
+
+      function setStreamVisible(visible) {
+        streamEl().style.visibility = visible ? 'visible' : 'hidden';
+      }
+
+      function stopStatePolling() {
+        if (statePollTimer) {
+          clearInterval(statePollTimer);
+          statePollTimer = null;
+        }
+      }
+
+      function disconnectStream(reason = 'Disconnected.', isError = false) {
+        intentionalDisconnect = true;
+        pendingSwitch = null;
+        setBusy(false);
+        stopStatePolling();
+        setStreamVisible(false);
+        setPlaceholder(reason, true);
+        const img = streamEl();
+        img.removeAttribute('src');
+        img.src = '';
+        lastPollErrorText = '';
+        setStatus(reason, isError);
       }
 
       function updateStateUi(state) {
@@ -278,11 +336,12 @@
       }
 
       function startStatePolling() {
-        if (statePollTimer) clearInterval(statePollTimer);
+        stopStatePolling();
         statePollTimer = setInterval(async () => {
           try {
             await fetchState();
           } catch (e) {
+            if (intentionalDisconnect) return;
             const msg = 'Worker unavailable: ' + e;
             if (msg !== lastPollErrorText) {
               setStatus(msg, true);
@@ -294,7 +353,12 @@
 
       function connect() {
         const url = base() + '/stream.mjpg';
-        document.getElementById('stream').src = url;
+        intentionalDisconnect = false;
+        pendingSwitch = null;
+        setBusy(false);
+        setStreamVisible(false);
+        setPlaceholder('Connecting to ' + url + ' …', true);
+        streamEl().src = url;
         setStatus('Connected to ' + url);
         startStatePolling();
         fetchState().catch((e) => setStatus('Connected, but state fetch failed: ' + e, true));
@@ -302,12 +366,15 @@
 
       async function sendCmd(cmd, busyText = '') {
         const isModelSwitch = (cmd === 'm' || cmd === 'n' || cmd === 'next' || cmd === 'prev' || cmd === 'previous');
+        const isQuit = (cmd === 'q' || cmd === 'quit' || cmd === 'exit' || cmd === 'stop');
         const seq = ++cmdSeq;
 
         if (isModelSwitch) {
           pendingSwitch = { seq, cmd };
           setBusy(true, busyText || 'Switching model…');
           setStatus((busyText || 'Switching model…') + ' This may take a bit on first download.');
+        } else if (isQuit) {
+          setStatus('Stopping worker…');
         }
 
         try {
@@ -318,10 +385,19 @@
           });
           if (!r.ok) throw new Error('HTTP ' + r.status);
 
+          if (isQuit) {
+            disconnectStream('Worker stopped.');
+            return;
+          }
+
           if (!isModelSwitch) {
             await fetchState().catch(() => {});
           }
         } catch (e) {
+          if (isQuit) {
+            disconnectStream('Worker stop requested.', false);
+            return;
+          }
           if (isModelSwitch) {
             pendingSwitch = null;
             setBusy(false);
@@ -330,6 +406,21 @@
         }
       }
 
+      streamEl().addEventListener('load', () => {
+        if (intentionalDisconnect) return;
+        setStreamVisible(true);
+        setPlaceholder('', false);
+      });
+
+      streamEl().addEventListener('error', () => {
+        if (intentionalDisconnect) return;
+        setStreamVisible(false);
+        setPlaceholder('Stream disconnected.', true);
+        setStatus('Stream disconnected.', true);
+      });
+
+      setStreamVisible(false);
+      setPlaceholder('Connecting…', true);
       connect();
     </script>
   </body>
