@@ -5,46 +5,331 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>sentinelCam web</title>
     <style>
-      body { font-family: system-ui, sans-serif; margin: 24px; }
-      img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 12px; }
-      .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-      input, button { padding: 8px 10px; font: inherit; }
-      input { min-width: 320px; }
+      :root {
+        color-scheme: dark;
+        --bg: #111827;
+        --panel: #1f2937;
+        --panel-2: #111827;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --border: #374151;
+        --accent: #60a5fa;
+        --ok: #34d399;
+        --warn: #fbbf24;
+        --danger: #f87171;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .page {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0 0 16px;
+        font-size: 1.75rem;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
+      }
+      input, button {
+        padding: 10px 12px;
+        font: inherit;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+      }
+      input {
+        min-width: 320px;
+        background: var(--panel-2);
+        color: var(--text);
+      }
+      button {
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(1.08); }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .secondary { background: #374151; }
+      .danger { background: #991b1b; }
+      #status {
+        min-height: 1.5em;
+        color: var(--muted);
+        margin: 6px 0 14px;
+      }
+      #state {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+      }
+      .chip {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 8px 12px;
+        color: var(--muted);
+      }
+      .chip strong { color: var(--text); }
+      .viewer {
+        position: relative;
+        overflow: hidden;
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        background: #000;
+      }
+      img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .busy-overlay {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.48);
+        backdrop-filter: blur(2px);
+        z-index: 2;
+      }
+      .busy-overlay.show {
+        display: flex;
+      }
+      .busy-card {
+        min-width: 280px;
+        max-width: 90%;
+        background: rgba(17, 24, 39, 0.94);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 18px;
+        box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+      }
+      .busy-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      .spinner {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 3px solid rgba(255,255,255,0.2);
+        border-top-color: var(--accent);
+        animation: spin 0.9s linear infinite;
+        flex: 0 0 auto;
+      }
+      .progress {
+        width: 100%;
+        height: 10px;
+        background: rgba(255,255,255,0.08);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .progress::before {
+        content: "";
+        display: block;
+        width: 35%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
+        animation: indeterminate 1.2s ease-in-out infinite;
+      }
+      .small {
+        font-size: 0.92rem;
+        color: var(--muted);
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes indeterminate {
+        0%   { transform: translateX(-120%); }
+        100% { transform: translateX(340%); }
+      }
     </style>
   </head>
   <body>
-    <h1>sentinelCam web</h1>
-    <div class="row">
-      <input id="base" value="http://127.0.0.1:8080" />
-      <button onclick="connect()">Connect</button>
-      <button onclick="sendCmd('m')">Prev model</button>
-      <button onclick="sendCmd('n')">Next model</button>
-      <button onclick="sendCmd('p')">Pose</button>
-      <button onclick="sendCmd('o')">Overlay</button>
-      <button onclick="sendCmd('i')">Inference</button>
-      <button onclick="sendCmd('q')">Quit</button>
+    <div class="page">
+      <h1>sentinelCam web</h1>
+
+      <div class="panel">
+        <div class="row">
+          <input id="base" value="http://127.0.0.1:8080" />
+          <button onclick="connect()">Connect</button>
+          <button id="btnPrev" class="secondary" onclick="sendCmd('n', 'Switching to previous model…')">Prev model</button>
+          <button id="btnNext" class="secondary" onclick="sendCmd('m', 'Switching to next model…')">Next model</button>
+          <button class="secondary" onclick="sendCmd('p')">Pose</button>
+          <button class="secondary" onclick="sendCmd('o')">Overlay</button>
+          <button class="secondary" onclick="sendCmd('i')">Inference</button>
+          <button class="danger" onclick="sendCmd('q')">Quit</button>
+        </div>
+
+        <div id="status">Idle.</div>
+
+        <div id="state">
+          <div class="chip">Preset: <strong id="statePreset">-</strong></div>
+          <div class="chip">Detection: <strong id="stateDet">-</strong></div>
+          <div class="chip">Pose: <strong id="statePose">-</strong></div>
+          <div class="chip">FPS: <strong id="stateFps">-</strong></div>
+          <div class="chip">Inference: <strong id="stateInference">-</strong></div>
+        </div>
+      </div>
+
+      <div class="viewer" style="margin-top:16px;">
+        <div id="busyOverlay" class="busy-overlay">
+          <div class="busy-card">
+            <div class="busy-head">
+              <div class="spinner"></div>
+              <div>
+                <div id="busyTitle">Switching model…</div>
+                <div class="small">The worker applies the command after the model is loaded.</div>
+              </div>
+            </div>
+            <div class="progress"></div>
+          </div>
+        </div>
+        <img id="stream" alt="sentinelCam stream" />
+      </div>
     </div>
-    <p id="status"></p>
-    <img id="stream" alt="sentinelCam stream" />
+
     <script>
-      function base() { return document.getElementById('base').value.replace(/\/+$/, ''); }
+      let statePollTimer = null;
+      let lastState = null;
+      let cmdSeq = 0;
+      let pendingSwitch = null;
+      let lastPollErrorText = '';
+
+      function base() {
+        return document.getElementById('base').value.replace(/\/+$/, '');
+      }
+
+      function setStatus(text, isError = false) {
+        const el = document.getElementById('status');
+        el.textContent = text;
+        el.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+      }
+
+      function setBusy(on, title = 'Switching model…') {
+        const overlay = document.getElementById('busyOverlay');
+        document.getElementById('busyTitle').textContent = title;
+        overlay.classList.toggle('show', !!on);
+        document.getElementById('btnPrev').disabled = !!on;
+        document.getElementById('btnNext').disabled = !!on;
+      }
+
+      function updateStateUi(state) {
+        lastState = state || {};
+        document.getElementById('statePreset').textContent = state?.preset || '-';
+        document.getElementById('stateDet').textContent = state?.det || '-';
+        document.getElementById('statePose').textContent = state?.pose_enabled ? (state?.pose || 'on') : 'off';
+        document.getElementById('stateFps').textContent = Number.isFinite(state?.fps) ? state.fps.toFixed(1) : '-';
+        document.getElementById('stateInference').textContent = state?.inference_enabled ? 'on' : 'off';
+      }
+
+      async function fetchState() {
+        const r = await fetch(base() + '/api/state', { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const state = await r.json();
+        updateStateUi(state);
+
+        if (state?.busy) {
+          setBusy(true, state?.busy_text || 'Working…');
+          if (pendingSwitch) {
+            setStatus((state?.busy_text || 'Switching model…') + ' Please wait…');
+          }
+        }
+
+        if (state?.last_error) {
+          setBusy(false);
+          pendingSwitch = null;
+          setStatus(state.last_error, true);
+        } else if (state?.worker_alive === false) {
+          setBusy(false);
+          setStatus('Worker paused or restarting…', true);
+        }
+
+        if (pendingSwitch && Number(state.cmd_seq_applied || 0) >= pendingSwitch.seq) {
+          setBusy(false);
+          setStatus(`Model switched: ${state.preset || 'done'} (${state.det || 'unknown'})`);
+          pendingSwitch = null;
+        }
+
+        lastPollErrorText = '';
+        return state;
+      }
+
+      function startStatePolling() {
+        if (statePollTimer) clearInterval(statePollTimer);
+        statePollTimer = setInterval(async () => {
+          try {
+            await fetchState();
+          } catch (e) {
+            const msg = 'Worker unavailable: ' + e;
+            if (msg !== lastPollErrorText) {
+              setStatus(msg, true);
+              lastPollErrorText = msg;
+            }
+          }
+        }, 500);
+      }
+
       function connect() {
         const url = base() + '/stream.mjpg';
         document.getElementById('stream').src = url;
-        document.getElementById('status').textContent = 'Connected to ' + url;
+        setStatus('Connected to ' + url);
+        startStatePolling();
+        fetchState().catch((e) => setStatus('Connected, but state fetch failed: ' + e, true));
       }
-      async function sendCmd(cmd) {
+
+      async function sendCmd(cmd, busyText = '') {
+        const isModelSwitch = (cmd === 'm' || cmd === 'n' || cmd === 'next' || cmd === 'prev' || cmd === 'previous');
+        const seq = ++cmdSeq;
+
+        if (isModelSwitch) {
+          pendingSwitch = { seq, cmd };
+          setBusy(true, busyText || 'Switching model…');
+          setStatus((busyText || 'Switching model…') + ' This may take a bit on first download.');
+        }
+
         try {
           const r = await fetch(base() + '/api/cmd', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cmd })
+            body: JSON.stringify({ cmd, seq })
           });
           if (!r.ok) throw new Error('HTTP ' + r.status);
+
+          if (!isModelSwitch) {
+            await fetchState().catch(() => {});
+          }
         } catch (e) {
-          document.getElementById('status').textContent = 'Command failed: ' + e;
+          if (isModelSwitch) {
+            pendingSwitch = null;
+            setBusy(false);
+          }
+          setStatus('Command failed: ' + e, true);
         }
       }
+
       connect();
     </script>
   </body>
