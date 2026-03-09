@@ -1,61 +1,95 @@
 # sentinelCam Web
 
-## Web-Ausgabe (Browser)
+`sentinelCam-web` is the browser UI for the sentinelCam stack.
 
-Standardmässig zeigt `webcam.py` das Ergebnis in einem OpenCV-Fenster.
-Wenn du es **headless** (z.B. auf einem Server/RPi) laufen lassen willst, kannst du den Stream auf einer Webseite anzeigen:
+It is a lightweight frontend that connects to a running [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) instance, displays the processed stream, shows worker state, and sends runtime control commands.
 
-### 1) Installation
+## What this repo does
 
-Zuerst muss das install.sh/install.bat ausgeführt werden.
+- connects to a worker over HTTP
+- displays the processed MJPEG stream in the browser
+- polls worker state
+- sends commands like:
+  - next / previous model
+  - pose toggle
+  - overlay toggle
+  - inference toggle
+  - quit
 
-```bash
-sh install.sh
+## What this repo does not do
+
+This repo does **not** run YOLO itself.  
+It does **not** capture cameras directly.  
+All video processing happens in [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker).
+
+## Where this repo fits
+
+Typical flow:
+
+`camera -> worker -> web browser`
+
+Future distributed flow:
+
+`camera -> sentinelCam-edge -> sentinelCam-worker -> sentinelCam-web`
+
+## Related repositories
+
+- **Processing backend:** [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker)  
+  Required. Provides the video stream and control API used by this UI.
+
+- **Edge capture node:** [`sentinelCam-edge`](https://github.com/okixk/sentinelCam-edge)  
+  Optional future camera-side component that will feed streams into the worker.
+
+## Requirements
+
+You need a running worker first.
+
+Example worker base URL:
+
+```text
+http://127.0.0.1:8080
 ```
 
-Beim Installieren wird auch eine Testinstanz gestartet. Diese kann nach dem Installieren direkt mit `q` beendet werden.
+## Quick start
 
-### 2) Schnell & ohne Zusatz-Dependencies: MJPEG
+Right now this repo is just a static frontend.
 
-```bash
-./run.sh --web --stream mjpeg --port 8080
-```
+You can simply open `index.html` in a browser, or serve it with any static file server.
 
-Dann im Browser öffnen:
+Then enter the worker base URL in the input field and click **Connect**.
 
-* `http://localhost:8080/`
+## Worker endpoints used by this UI
 
-MJPEG ist sehr kompatibel, aber nicht der effizienteste Codec.
+The UI expects the worker to provide:
 
-### 3) Niedrigere Latenz: WebRTC
+- `GET /stream.mjpg`
+- `GET /api/state`
+- `POST /api/cmd`
 
-WebRTC liefert typischerweise die geringste End-to-End-Latenz im Browser.
+So if your worker runs on `http://192.168.1.50:8080`, this UI will use:
 
-Dafür wird ein Zusatz-Paket mit dem install.sh/install.bat automatisch installiert.
-Für eine manuelle Installation kann dieser Befehl verwendet werden:
+- `http://192.168.1.50:8080/stream.mjpg`
+- `http://192.168.1.50:8080/api/state`
+- `http://192.168.1.50:8080/api/cmd`
 
-```bash
-python -m pip install aiohttp aiortc av
-```
+## Features
 
-Start:
+- live MJPEG stream viewer
+- worker status display
+- current preset / detection / pose / FPS / inference state
+- model switching with loading feedback
+- basic remote worker control from the browser
 
-```bash
-./run.sh --web --stream webrtc --port 8080 --webrtc-codec auto
-```
+## Files
 
-Codec-Präferenz (best-effort):
+- `index.html` — complete frontend UI
 
-* `--webrtc-codec h264` (meist beste Kompatibilität / HW-Encoding möglich)
-* `--webrtc-codec vp8` / `vp9`
-* `--webrtc-codec av1` (nur wenn Browser + FFmpeg/PyAV Encoder unterstützen; oft CPU-lastig)
+## Notes
 
-Wenn `--stream auto` genutzt wird (Default) und WebRTC nicht verfügbar ist, fällt der Worker automatisch auf MJPEG zurück.
+- This repo is intentionally simple and static.
+- It is best used on the same private network as the worker.
+- If the worker is remote, make sure the worker host/port is reachable from the browser.
 
-## Tipps für weniger Latenz
+## Status
 
-* `--max-fps` hoch setzen (oder `--max-fps 0` für uncapped), damit der Worker nicht künstlich schläft.
-* `--width/--height` und `--imgsz` reduzieren, wenn Inference zu langsam ist.
-* Für RTSP-Quellen kann eine kleine Buffer-Queue helfen (wir setzen best-effort `CAP_PROP_BUFFERSIZE=1`).
-
-> Hinweis: Der eingebaute Web-Server hat **keine Auth**. Für echte Deployments bitte hinter Reverse-Proxy/VPN betreiben.
+Current browser frontend for the sentinelCam stack.
