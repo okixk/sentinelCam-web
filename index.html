@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>sentinelCam web</title>
+    <link rel="icon" href="data:," />
     <style>
       :root {
         color-scheme: dark;
@@ -19,7 +20,10 @@
         --danger: #f87171;
       }
 
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         font-family: system-ui, sans-serif;
         margin: 0;
@@ -27,68 +31,114 @@
         background: var(--bg);
         color: var(--text);
       }
+
       .page {
         max-width: 1200px;
         margin: 0 auto;
       }
+
       h1 {
         margin: 0 0 16px;
         font-size: 1.75rem;
       }
+
       .row {
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
         margin-bottom: 12px;
       }
+
       .panel {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 16px;
         padding: 14px;
       }
-      input, button {
+
+      input,
+      button {
         padding: 10px 12px;
         font: inherit;
         border-radius: 10px;
         border: 1px solid var(--border);
       }
+
       input {
         min-width: 320px;
         background: var(--panel-2);
         color: var(--text);
       }
+
       button {
         background: #2563eb;
         color: white;
         cursor: pointer;
       }
-      button:hover { filter: brightness(1.08); }
+
+      button:hover {
+        filter: brightness(1.08);
+      }
+
       button:disabled {
         opacity: 0.6;
         cursor: not-allowed;
       }
-      .secondary { background: #374151; }
-      .danger { background: #991b1b; }
+
+      .secondary {
+        background: #374151;
+      }
+
+      .danger {
+        background: #991b1b;
+      }
+
       #status {
         min-height: 1.5em;
         color: var(--muted);
-        margin: 6px 0 14px;
+        margin: 6px 0 6px;
       }
+
+      #connectionNote,
+      #streamModeNote {
+        margin-bottom: 10px;
+      }
+
       #state {
         display: flex;
         gap: 10px;
         flex-wrap: wrap;
         margin-bottom: 14px;
       }
+
       .chip {
-        background: rgba(255,255,255,0.04);
+        background: rgba(255, 255, 255, 0.04);
         border: 1px solid var(--border);
         border-radius: 999px;
         padding: 8px 12px;
         color: var(--muted);
       }
-      .chip strong { color: var(--text); }
+
+      .chip strong {
+        color: var(--text);
+      }
+
+      #stateStreamMode[data-mode="webrtc"] {
+        color: var(--ok);
+      }
+
+      #stateStreamMode[data-mode="mjpeg"] {
+        color: var(--warn);
+      }
+
+      #stateStreamMode[data-mode="error"] {
+        color: var(--danger);
+      }
+
+      #stateStreamMode[data-mode="connecting"] {
+        color: var(--accent);
+      }
+
       .viewer {
         position: relative;
         overflow: hidden;
@@ -97,12 +147,19 @@
         background: #000;
         aspect-ratio: 16 / 9;
       }
-      img {
-        display: block;
+
+      .stream-media {
+        display: none;
         width: 100%;
         height: 100%;
         object-fit: contain;
+        background: #000;
       }
+
+      .stream-media.show {
+        display: block;
+      }
+
       .stream-placeholder {
         position: absolute;
         inset: 0;
@@ -115,9 +172,11 @@
         background: rgba(0, 0, 0, 0.55);
         z-index: 1;
       }
+
       .stream-placeholder.hidden {
         display: none;
       }
+
       .busy-overlay {
         position: absolute;
         inset: 0;
@@ -128,9 +187,11 @@
         backdrop-filter: blur(2px);
         z-index: 2;
       }
+
       .busy-overlay.show {
         display: flex;
       }
+
       .busy-card {
         min-width: 280px;
         max-width: 90%;
@@ -138,30 +199,34 @@
         border: 1px solid var(--border);
         border-radius: 16px;
         padding: 18px;
-        box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
       }
+
       .busy-head {
         display: flex;
         align-items: center;
         gap: 12px;
         margin-bottom: 10px;
       }
+
       .spinner {
         width: 22px;
         height: 22px;
         border-radius: 50%;
-        border: 3px solid rgba(255,255,255,0.2);
+        border: 3px solid rgba(255, 255, 255, 0.2);
         border-top-color: var(--accent);
         animation: spin 0.9s linear infinite;
         flex: 0 0 auto;
       }
+
       .progress {
         width: 100%;
         height: 10px;
-        background: rgba(255,255,255,0.08);
+        background: rgba(255, 255, 255, 0.08);
         border-radius: 999px;
         overflow: hidden;
       }
+
       .progress::before {
         content: "";
         display: block;
@@ -171,16 +236,34 @@
         background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
         animation: indeterminate 1.2s ease-in-out infinite;
       }
+
       .small {
         font-size: 0.92rem;
         color: var(--muted);
       }
-      @keyframes spin {
-        to { transform: rotate(360deg); }
+
+      .small.warn {
+        color: var(--warn);
       }
+
+      .small.error {
+        color: var(--danger);
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
       @keyframes indeterminate {
-        0%   { transform: translateX(-120%); }
-        100% { transform: translateX(340%); }
+        0% {
+          transform: translateX(-120%);
+        }
+
+        100% {
+          transform: translateX(340%);
+        }
       }
     </style>
   </head>
@@ -190,10 +273,16 @@
 
       <div class="panel">
         <div class="row">
-          <input id="base" value="http://127.0.0.1:8080" />
+          <input
+            id="base"
+            value=""
+            spellcheck="false"
+            placeholder="/ or http://127.0.0.1:8080"
+            aria-label="Worker base URL"
+          />
           <button onclick="connect()">Connect</button>
-          <button id="btnPrev" class="secondary" onclick="sendCmd('n', 'Switching to previous model…')">Prev model</button>
-          <button id="btnNext" class="secondary" onclick="sendCmd('m', 'Switching to next model…')">Next model</button>
+          <button id="btnPrev" class="secondary" onclick="sendCmd('n', 'Switching to previous model...')">Prev model</button>
+          <button id="btnNext" class="secondary" onclick="sendCmd('m', 'Switching to next model...')">Next model</button>
           <button class="secondary" onclick="sendCmd('p')">Pose</button>
           <button class="secondary" onclick="sendCmd('o')">Overlay</button>
           <button class="secondary" onclick="sendCmd('i')">Inference</button>
@@ -201,8 +290,12 @@
         </div>
 
         <div id="status">Idle.</div>
+        <div id="connectionNote" class="small">Same-origin proxy mode. The web server forwards /api/* and /stream.mjpg to the worker.</div>
+        <div id="streamModeNote" class="small">WebRTC first. MJPEG fallback is used only when the worker does not expose WebRTC.</div>
 
         <div id="state">
+          <div class="chip">Connection: <strong id="stateConnection">Proxy</strong></div>
+          <div class="chip">Stream: <strong id="stateStreamMode" data-mode="idle">Idle</strong></div>
           <div class="chip">Preset: <strong id="statePreset">-</strong></div>
           <div class="chip">Detection: <strong id="stateDet">-</strong></div>
           <div class="chip">Pose: <strong id="statePose">-</strong></div>
@@ -211,217 +304,1007 @@
         </div>
       </div>
 
-      <div class="viewer" style="margin-top:16px;">
+      <div class="viewer" style="margin-top: 16px;">
         <div id="busyOverlay" class="busy-overlay">
           <div class="busy-card">
             <div class="busy-head">
               <div class="spinner"></div>
               <div>
-                <div id="busyTitle">Switching model…</div>
+                <div id="busyTitle">Switching model...</div>
                 <div class="small">The worker applies the command after the model is loaded.</div>
               </div>
             </div>
             <div class="progress"></div>
           </div>
         </div>
-        <div id="streamPlaceholder" class="stream-placeholder">Connecting…</div>
-        <img id="stream" alt="sentinelCam stream" />
+        <div id="streamPlaceholder" class="stream-placeholder">Connecting...</div>
+        <video id="stream" class="stream-media" autoplay playsinline muted></video>
+        <img id="streamFallback" class="stream-media" alt="sentinelCam MJPEG fallback" />
       </div>
     </div>
 
     <script>
+      const DEFAULT_DIRECT_BASE = "http://127.0.0.1:8080";
+      const STATE_POLL_INTERVAL_MS = 500;
+      const ICE_GATHER_TIMEOUT_MS = 4000;
+      const WEBRTC_RETRY_DELAY_MS = 2000;
+      const MJPEG_PROBE_TIMEOUT_MS = 5000;
+      const MODEL_SWITCH_COMMANDS = new Set(["m", "n", "next", "prev", "previous"]);
+      const QUIT_COMMANDS = new Set(["q", "quit", "exit", "stop"]);
+      const IS_FILE_PROTOCOL = window.location.protocol === "file:";
+      const PAGE_ORIGIN = window.location.origin || "";
+      const PAGE_PROTOCOL = window.location.protocol || "";
+
       let statePollTimer = null;
-      let lastState = null;
       let cmdSeq = 0;
       let pendingSwitch = null;
-      let lastPollErrorText = '';
+      let lastPollErrorText = "";
+      let currentTarget = null;
+      let currentCapabilities = {
+        webrtcAvailable: true,
+        mjpegAvailable: true,
+        backend: ""
+      };
+      let activePeer = null;
+      let reconnectTimer = null;
+      let connectGeneration = 0;
       let intentionalDisconnect = false;
+      let pausedForHidden = false;
+      let mjpegProbeId = 0;
 
-      function base() {
-        return document.getElementById('base').value.replace(/\/+$/, '');
+      function baseInputEl() {
+        return document.getElementById("base");
       }
 
-      function streamEl() {
-        return document.getElementById('stream');
+      function videoEl() {
+        return document.getElementById("stream");
+      }
+
+      function fallbackEl() {
+        return document.getElementById("streamFallback");
       }
 
       function placeholderEl() {
-        return document.getElementById('streamPlaceholder');
+        return document.getElementById("streamPlaceholder");
+      }
+
+      function connectionNoteEl() {
+        return document.getElementById("connectionNote");
+      }
+
+      function streamModeNoteEl() {
+        return document.getElementById("streamModeNote");
+      }
+
+      function createError(message, details = {}) {
+        const error = new Error(message);
+        Object.assign(error, details);
+        return error;
+      }
+
+      function formatError(error) {
+        if (!error) {
+          return "Unknown error";
+        }
+        if (typeof error === "string") {
+          return error;
+        }
+        if (error.message) {
+          return error.message;
+        }
+        return String(error);
+      }
+
+      function isModelSwitchCommand(cmd) {
+        return MODEL_SWITCH_COMMANDS.has(String(cmd || "").toLowerCase());
+      }
+
+      function isQuitCommand(cmd) {
+        return QUIT_COMMANDS.has(String(cmd || "").toLowerCase());
+      }
+
+      function capabilitiesFromState(state) {
+        const payload = state && typeof state === "object" ? state : {};
+        return {
+          webrtcAvailable: typeof payload.webrtc_available === "boolean" ? payload.webrtc_available : true,
+          mjpegAvailable: typeof payload.mjpeg_available === "boolean" ? payload.mjpeg_available : true,
+          backend: typeof payload.stream_backend === "string" ? payload.stream_backend : ""
+        };
+      }
+
+      function normalizeBaseUrl(url) {
+        return url.href.replace(/\/+$/, "");
+      }
+
+      function extractServerError(text) {
+        const trimmed = (text || "").trim();
+        if (!trimmed) {
+          return "";
+        }
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
+            return parsed.error.trim();
+          }
+        } catch (error) {
+          // Fall back to plain text below.
+        }
+        return trimmed.replace(/\s+/g, " ");
+      }
+
+      function describeWorkerHttpError(status, serverError, url, target) {
+        if (status === 401) {
+          return "Worker auth is enabled at " + url + ". Direct browser mode does not send worker tokens. Use web_server.py or Apache proxy mode instead.";
+        }
+        if (status === 404 && /\/api\/webrtc\/offer(?:\?|$)/i.test(url)) {
+          return "Worker does not expose WebRTC signaling at " + url + ". Start the worker with WebRTC enabled or keep using MJPEG.";
+        }
+        if (status === 403 && /origin not allowed/i.test(serverError)) {
+          if (target.kind === "proxy") {
+            return "The worker rejected the proxy origin for " + url + ". Check WEB_ALLOWED_ORIGINS on the worker or keep all traffic behind the same-origin proxy.";
+          }
+          return "The worker rejected this browser origin for " + url + ". Use proxy mode or add this page origin to WEB_ALLOWED_ORIGINS on the worker.";
+        }
+        if (status === 403) {
+          if (target.kind === "proxy") {
+            return "Proxy request to the worker was rejected for " + url + (serverError ? ": " + serverError : ".");
+          }
+          return "Worker rejected " + url + ". If the worker is token-protected, use web_server.py or Apache proxy instead." + (serverError ? " Details: " + serverError : "");
+        }
+        if (target.kind === "proxy" && status === 502) {
+          return "The same-origin proxy could not reach the worker for " + url + ". Start the worker and verify the upstream target in web_server.py or Apache.";
+        }
+        return "HTTP " + status + " from " + url + (serverError ? ": " + serverError : "");
+      }
+
+      function describeWorkerNetworkError(error, url, target) {
+        if (PAGE_PROTOCOL === "https:" && /^http:\/\//i.test(url)) {
+          return "Mixed content blocked: this page is loaded over HTTPS, but the worker URL uses HTTP. Use proxy mode or expose the worker over HTTPS.";
+        }
+        if (IS_FILE_PROTOCOL && target.kind !== "direct") {
+          return "file:// pages cannot use '/' proxy mode. Enter a full worker URL such as " + DEFAULT_DIRECT_BASE + ".";
+        }
+        if (target.kind === "direct" && !IS_FILE_PROTOCOL) {
+          try {
+            const directOrigin = new URL(url).origin;
+            if (PAGE_ORIGIN && directOrigin !== PAGE_ORIGIN) {
+              return "Direct browser mode could not reach " + url + ". If the worker is running, this is usually a CORS/origin block. Use '/' proxy mode or add " + PAGE_ORIGIN + " to WEB_ALLOWED_ORIGINS on the worker.";
+            }
+          } catch (parseError) {
+            // Fall through to the generic direct-mode message.
+          }
+        }
+        if (target.kind === "proxy") {
+          return "Could not reach the same-origin proxy at " + url + ". Start web_server.py or fix the reverse-proxy setup.";
+        }
+        return "Could not reach " + url + ". Make sure the worker is running and reachable from this browser.";
+      }
+
+      function resolveTargetBase() {
+        const raw = baseInputEl().value.trim();
+
+        if (IS_FILE_PROTOCOL) {
+          if (!raw || raw === "/") {
+            return {
+              kind: "direct",
+              base: DEFAULT_DIRECT_BASE,
+              display: DEFAULT_DIRECT_BASE
+            };
+          }
+
+          let directUrl;
+          try {
+            directUrl = new URL(raw);
+          } catch (error) {
+            throw new Error("When opened via file://, enter a full http:// or https:// worker URL.");
+          }
+
+          if (!/^https?:$/.test(directUrl.protocol)) {
+            throw new Error("Base URL must use http:// or https://.");
+          }
+
+          const normalized = normalizeBaseUrl(directUrl);
+          return {
+            kind: "direct",
+            base: normalized,
+            display: normalized
+          };
+        }
+
+        if (!raw || raw === "/") {
+          return {
+            kind: "proxy",
+            base: "",
+            display: PAGE_ORIGIN || "/"
+          };
+        }
+
+        const absoluteInput = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw);
+        if (!absoluteInput) {
+          throw new Error("Use '/' for same-origin proxy mode or enter a full http(s) URL.");
+        }
+
+        let url;
+        try {
+          url = new URL(raw);
+        } catch (error) {
+          throw new Error("Base URL must be '/' or a full http(s) URL.");
+        }
+
+        if (!/^https?:$/.test(url.protocol)) {
+          throw new Error("Base URL must use http:// or https://.");
+        }
+
+        if (url.origin === PAGE_ORIGIN && (url.pathname === "/" || url.pathname === "")) {
+          return {
+            kind: "proxy",
+            base: "",
+            display: PAGE_ORIGIN || "/"
+          };
+        }
+
+        const normalized = normalizeBaseUrl(url);
+        return {
+          kind: "direct",
+          base: normalized,
+          display: normalized
+        };
+      }
+
+      function endpointFor(path, target = currentTarget || resolveTargetBase()) {
+        return (target.base || "") + path;
+      }
+
+      async function workerFetch(path, init = {}, options = {}) {
+        const target = options.target || currentTarget || resolveTargetBase();
+        const url = endpointFor(path, target);
+        let response;
+
+        try {
+          response = await fetch(url, Object.assign({ cache: "no-store" }, init));
+        } catch (error) {
+          throw createError(describeWorkerNetworkError(error, url, target), {
+            cause: error,
+            url: url,
+            status: 0,
+            target: target,
+            isNetworkError: true,
+            isMixedContent: PAGE_PROTOCOL === "https:" && /^http:\/\//i.test(url)
+          });
+        }
+
+        const bodyText = await response.text();
+        if (!response.ok) {
+          const serverError = extractServerError(bodyText);
+          throw createError(describeWorkerHttpError(response.status, serverError, url, target), {
+            url: url,
+            status: response.status,
+            target: target,
+            bodyText: bodyText,
+            serverError: serverError,
+            isAuthError: response.status === 401 || response.status === 403,
+            isOriginError: response.status === 403 && /origin not allowed/i.test(serverError)
+          });
+        }
+
+        if (options.expect === "json") {
+          if (!bodyText) {
+            return {};
+          }
+          try {
+            return JSON.parse(bodyText);
+          } catch (error) {
+            throw createError("Worker returned invalid JSON from " + url + ".", {
+              cause: error,
+              url: url,
+              status: response.status,
+              target: target,
+              bodyText: bodyText
+            });
+          }
+        }
+
+        return bodyText;
+      }
+
+      function shouldRetryWebRtc(error) {
+        if (!error) {
+          return false;
+        }
+        if (error.status || error.isAuthError || error.isOriginError || error.isMixedContent) {
+          return false;
+        }
+        const message = formatError(error).toLowerCase();
+        if (message.includes("does not support webrtc") || message.includes("mixed content")) {
+          return false;
+        }
+        return true;
+      }
+
+      function shouldSkipMjpegFallback(error) {
+        if (!error) {
+          return false;
+        }
+        if (error.isAuthError || error.isOriginError || error.isMixedContent) {
+          return true;
+        }
+        const message = formatError(error).toLowerCase();
+        return message.includes("worker tokens") || message.includes("origin") || message.includes("mixed content");
       }
 
       function setStatus(text, isError = false) {
-        const el = document.getElementById('status');
+        const el = document.getElementById("status");
         el.textContent = text;
-        el.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+        el.style.color = isError ? "var(--danger)" : "var(--muted)";
       }
 
-      function setBusy(on, title = 'Switching model…') {
-        const overlay = document.getElementById('busyOverlay');
-        document.getElementById('busyTitle').textContent = title;
-        overlay.classList.toggle('show', !!on);
-        document.getElementById('btnPrev').disabled = !!on;
-        document.getElementById('btnNext').disabled = !!on;
+      function setBusy(on, title = "Switching model...") {
+        const overlay = document.getElementById("busyOverlay");
+        document.getElementById("busyTitle").textContent = title;
+        overlay.classList.toggle("show", !!on);
+        document.getElementById("btnPrev").disabled = !!on;
+        document.getElementById("btnNext").disabled = !!on;
       }
 
-      function setPlaceholder(text = 'Not connected.', show = true) {
+      function setPlaceholder(text = "Not connected.", show = true) {
         const el = placeholderEl();
         el.textContent = text;
-        el.classList.toggle('hidden', !show);
+        el.classList.toggle("hidden", !show);
       }
 
-      function setStreamVisible(visible) {
-        streamEl().style.visibility = visible ? 'visible' : 'hidden';
+      function setConnectionMode(target) {
+        document.getElementById("stateConnection").textContent = target.kind === "proxy" ? "Proxy" : "Direct";
+        const note = connectionNoteEl();
+        if (target.kind === "proxy") {
+          note.textContent = "Same-origin proxy mode. The web server forwards /api/* and /stream.mjpg to the worker.";
+          note.className = "small";
+          return;
+        }
+        if (IS_FILE_PROTOCOL) {
+          note.textContent = "Local file mode. The browser talks directly to the worker at " + target.display + ". Keep this for localhost/dev only.";
+        } else {
+          note.textContent = "Direct browser mode. Use only for local/dev. Token-protected remote workers should stay behind web_server.py or Apache.";
+        }
+        note.className = "small warn";
+      }
+
+      function setStreamMode(mode, detail = "") {
+        const labelMap = {
+          idle: "Idle",
+          connecting: "Connecting",
+          webrtc: "WebRTC",
+          mjpeg: "MJPEG fallback",
+          error: "Error"
+        };
+        const el = document.getElementById("stateStreamMode");
+        el.textContent = labelMap[mode] || "Idle";
+        el.dataset.mode = mode;
+
+        const detailEl = streamModeNoteEl();
+        detailEl.textContent = detail;
+        if (mode === "error") {
+          detailEl.className = "small error";
+        } else if (mode === "mjpeg") {
+          detailEl.className = "small warn";
+        } else {
+          detailEl.className = "small";
+        }
+      }
+
+      function hideMedia() {
+        videoEl().classList.remove("show");
+        fallbackEl().classList.remove("show");
+      }
+
+      function showVideo() {
+        hideMedia();
+        videoEl().classList.add("show");
+      }
+
+      function showFallback() {
+        hideMedia();
+        fallbackEl().classList.add("show");
+      }
+
+      function clearVideoStream() {
+        const video = videoEl();
+        const stream = video.srcObject;
+        if (stream && typeof stream.getTracks === "function") {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+        video.srcObject = null;
+        video.classList.remove("show");
+      }
+
+      function closePeer() {
+        const peer = activePeer;
+        activePeer = null;
+        if (peer) {
+          peer.ontrack = null;
+          peer.onconnectionstatechange = null;
+          peer.oniceconnectionstatechange = null;
+          try {
+            peer.close();
+          } catch (error) {
+            // Ignore cleanup errors.
+          }
+        }
+        clearVideoStream();
+      }
+
+      function clearFallbackImage() {
+        const img = fallbackEl();
+        img.classList.remove("show");
+        img.removeAttribute("src");
+        img.src = "";
+      }
+
+      function cancelMjpeg() {
+        mjpegProbeId += 1;
+        clearFallbackImage();
+      }
+
+      function clearReconnectTimer() {
+        if (reconnectTimer) {
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
       }
 
       function stopStatePolling() {
         if (statePollTimer) {
-          clearInterval(statePollTimer);
+          window.clearInterval(statePollTimer);
           statePollTimer = null;
         }
       }
 
-      function disconnectStream(reason = 'Disconnected.', isError = false) {
-        intentionalDisconnect = true;
-        pendingSwitch = null;
-        setBusy(false);
-        stopStatePolling();
-        setStreamVisible(false);
-        setPlaceholder(reason, true);
-        const img = streamEl();
-        img.removeAttribute('src');
-        img.src = '';
-        lastPollErrorText = '';
-        setStatus(reason, isError);
-      }
-
       function updateStateUi(state) {
-        lastState = state || {};
-        document.getElementById('statePreset').textContent = state?.preset || '-';
-        document.getElementById('stateDet').textContent = state?.det || '-';
-        document.getElementById('statePose').textContent = state?.pose_enabled ? (state?.pose || 'on') : 'off';
-        document.getElementById('stateFps').textContent = Number.isFinite(state?.fps) ? state.fps.toFixed(1) : '-';
-        document.getElementById('stateInference').textContent = state?.inference_enabled ? 'on' : 'off';
+        document.getElementById("statePreset").textContent = state && state.preset ? state.preset : "-";
+        document.getElementById("stateDet").textContent = state && state.det ? state.det : "-";
+        document.getElementById("statePose").textContent = state && state.pose_enabled ? "on" : "off";
+        document.getElementById("stateFps").textContent = state && Number.isFinite(state.fps) ? state.fps.toFixed(1) : "-";
+        document.getElementById("stateInference").textContent = state && state.inference_enabled ? "on" : "off";
       }
 
       async function fetchState() {
-        const r = await fetch(base() + '/api/state', { cache: 'no-store' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const state = await r.json();
+        const state = await workerFetch("/api/state", {}, { expect: "json" });
+        currentCapabilities = capabilitiesFromState(state);
         updateStateUi(state);
 
-        if (state?.busy) {
-          setBusy(true, state?.busy_text || 'Working…');
+        if (state && state.busy) {
+          setBusy(true, state.busy_text || "Working...");
           if (pendingSwitch) {
-            setStatus((state?.busy_text || 'Switching model…') + ' Please wait…');
+            setStatus((state.busy_text || "Switching model...") + " Please wait...");
           }
+        } else if (!pendingSwitch) {
+          setBusy(false);
         }
 
-        if (state?.last_error) {
+        if (state && state.last_error) {
           setBusy(false);
           pendingSwitch = null;
           setStatus(state.last_error, true);
-        } else if (state?.worker_alive === false) {
+        } else if (state && state.worker_alive === false) {
           setBusy(false);
-          setStatus('Worker paused or restarting…', true);
+          setStatus("Worker paused or restarting...", true);
         }
 
-        if (pendingSwitch && Number(state.cmd_seq_applied || 0) >= pendingSwitch.seq) {
+        if (pendingSwitch && Number(state && state.cmd_seq_applied || 0) >= pendingSwitch.seq) {
           setBusy(false);
-          setStatus(`Model switched: ${state.preset || 'done'} (${state.det || 'unknown'})`);
+          setStatus("Model switched: " + (state && state.preset ? state.preset : "done") + " (" + (state && state.det ? state.det : "unknown") + ")");
           pendingSwitch = null;
         }
 
-        lastPollErrorText = '';
+        lastPollErrorText = "";
         return state;
       }
 
       function startStatePolling() {
         stopStatePolling();
-        statePollTimer = setInterval(async () => {
+        statePollTimer = window.setInterval(async () => {
+          if (!currentTarget || pausedForHidden) {
+            return;
+          }
           try {
             await fetchState();
-          } catch (e) {
-            if (intentionalDisconnect) return;
-            const msg = 'Worker unavailable: ' + e;
-            if (msg !== lastPollErrorText) {
-              setStatus(msg, true);
-              lastPollErrorText = msg;
+          } catch (error) {
+            if (intentionalDisconnect || pausedForHidden) {
+              return;
+            }
+            const message = "Worker unavailable: " + formatError(error);
+            if (message !== lastPollErrorText) {
+              setStatus(message, true);
+              lastPollErrorText = message;
             }
           }
-        }, 500);
+        }, STATE_POLL_INTERVAL_MS);
       }
 
-      function connect() {
-        const url = base() + '/stream.mjpg';
-        intentionalDisconnect = false;
+      async function refreshStateNow() {
+        try {
+          return await fetchState();
+        } catch (error) {
+          setStatus("Connected, but state fetch failed: " + formatError(error), true);
+          return null;
+        }
+      }
+
+      async function beginMjpegOnly(messageText) {
+        const generation = ++connectGeneration;
+        clearReconnectTimer();
+        closePeer();
+        cancelMjpeg();
+        hideMedia();
+        setStreamMode("connecting", "Worker reports MJPEG-only streaming.");
+        setPlaceholder(messageText || "Connecting to MJPEG stream...", true);
+        setStatus(messageText || "Connecting to MJPEG stream...");
+
+        const loaded = await tryMjpegStream(endpointFor("/stream.mjpg"), generation);
+        if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) {
+          return;
+        }
+
+        if (loaded) {
+          showFallback();
+          setPlaceholder("", false);
+          setStreamMode("mjpeg", "Worker is running in MJPEG-only mode.");
+          setStatus("Connected using MJPEG.");
+          return;
+        }
+
+        cancelMjpeg();
+        hideMedia();
+        setStreamMode("error", "Worker reported MJPEG, but the MJPEG stream is not reachable.");
+        setPlaceholder("Stream unavailable. MJPEG endpoint is not reachable.", true);
+        setStatus("Worker reported MJPEG, but /stream.mjpg could not be opened.", true);
+      }
+
+      function waitForIceComplete(peer) {
+        return new Promise((resolve) => {
+          if (peer.iceGatheringState === "complete") {
+            resolve();
+            return;
+          }
+
+          const onStateChange = () => {
+            if (peer.iceGatheringState === "complete") {
+              peer.removeEventListener("icegatheringstatechange", onStateChange);
+              window.clearTimeout(timeoutId);
+              resolve();
+            }
+          };
+
+          const timeoutId = window.setTimeout(() => {
+            peer.removeEventListener("icegatheringstatechange", onStateChange);
+            resolve();
+          }, ICE_GATHER_TIMEOUT_MS);
+
+          peer.addEventListener("icegatheringstatechange", onStateChange);
+        });
+      }
+
+      async function openPeerConnection(generation) {
+        if (typeof RTCPeerConnection !== "function") {
+          throw createError("This browser does not support WebRTC.");
+        }
+
+        const peer = new RTCPeerConnection();
+        let receivedVideoTrack = false;
+        activePeer = peer;
+
+        peer.addTransceiver("video", { direction: "recvonly" });
+
+        peer.ontrack = (event) => {
+          if (generation !== connectGeneration || activePeer !== peer) {
+            return;
+          }
+          receivedVideoTrack = true;
+          const stream = event.streams && event.streams[0];
+          if (stream) {
+            videoEl().srcObject = stream;
+            showVideo();
+            setPlaceholder("", false);
+            setStreamMode("webrtc", "Live video is streaming over WebRTC.");
+            setStatus("Receiving WebRTC video.");
+          }
+        };
+
+        peer.onconnectionstatechange = () => {
+          if (generation !== connectGeneration || activePeer !== peer) {
+            return;
+          }
+          const state = peer.connectionState;
+          if (state === "connected") {
+            setStatus("WebRTC connected. Waiting for video...");
+            return;
+          }
+          if (state === "failed" || state === "disconnected" || state === "closed") {
+            if (intentionalDisconnect || pausedForHidden || document.hidden) {
+              return;
+            }
+            scheduleReconnect(new Error("WebRTC connection " + state + "."));
+          }
+        };
+
+        const offer = await peer.createOffer();
+        if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) {
+          throw new Error("Connection cancelled.");
+        }
+
+        await peer.setLocalDescription(offer);
+        await waitForIceComplete(peer);
+
+        if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) {
+          throw new Error("Connection cancelled.");
+        }
+
+        const answer = await workerFetch(
+          "/api/webrtc/offer",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              sdp: peer.localDescription.sdp,
+              type: peer.localDescription.type
+            })
+          },
+          { expect: "json" }
+        );
+        if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) {
+          throw new Error("Connection cancelled.");
+        }
+
+        await peer.setRemoteDescription(answer);
+        if (!receivedVideoTrack && generation === connectGeneration && activePeer === peer) {
+          setStreamMode("connecting", "WebRTC negotiated. Waiting for the first video frames...");
+          setStatus("WebRTC negotiated. Waiting for video...");
+        }
+      }
+
+      function scheduleReconnect(error) {
+        if (reconnectTimer || intentionalDisconnect || pausedForHidden || document.hidden) {
+          return;
+        }
+
+        const detail = formatError(error);
+        closePeer();
+        cancelMjpeg();
+        setStreamMode("connecting", "Retrying WebRTC once before trying MJPEG fallback.");
+        setPlaceholder("WebRTC disconnected. Retrying...", true);
+        setStatus("WebRTC disconnected: " + detail + " Retrying...", true);
+
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          if (intentionalDisconnect || pausedForHidden || document.hidden) {
+            return;
+          }
+          beginWebRtc(false, "Retrying WebRTC...");
+        }, WEBRTC_RETRY_DELAY_MS);
+      }
+
+      function tryMjpegStream(url, generation) {
+        const img = fallbackEl();
+        const probeId = ++mjpegProbeId;
+        clearFallbackImage();
+
+        return new Promise((resolve) => {
+          let settled = false;
+
+          const cleanup = () => {
+            window.clearTimeout(timeoutId);
+            img.removeEventListener("load", onLoad);
+            img.removeEventListener("error", onError);
+          };
+
+          const finish = (value) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            cleanup();
+            resolve(value);
+          };
+
+          const onLoad = () => {
+            if (probeId !== mjpegProbeId || generation !== connectGeneration) {
+              finish(false);
+              return;
+            }
+            finish(true);
+          };
+
+          const onError = () => {
+            finish(false);
+          };
+
+          const timeoutId = window.setTimeout(() => {
+            finish(false);
+          }, MJPEG_PROBE_TIMEOUT_MS);
+
+          img.addEventListener("load", onLoad);
+          img.addEventListener("error", onError);
+          img.src = url + (url.includes("?") ? "&" : "?") + "ts=" + Date.now();
+        });
+      }
+
+      async function tryMjpegFallback(generation, error) {
+        if (currentCapabilities && currentCapabilities.mjpegAvailable === false) {
+          const detail = formatError(error);
+          hideMedia();
+          setStreamMode("error", "WebRTC failed and the worker did not advertise MJPEG fallback.");
+          setPlaceholder("Stream unavailable. WebRTC failed and no MJPEG fallback is available.", true);
+          setStatus("WebRTC failed: " + detail, true);
+          return;
+        }
+
+        const detail = formatError(error);
+        setStreamMode("connecting", "Trying MJPEG fallback because WebRTC is unavailable.");
+        setPlaceholder("WebRTC unavailable. Trying MJPEG fallback...", true);
+        setStatus("WebRTC failed: " + detail + " Trying MJPEG fallback...", true);
+
+        const loaded = await tryMjpegStream(endpointFor("/stream.mjpg"), generation);
+        if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) {
+          return;
+        }
+
+        if (loaded) {
+          showFallback();
+          setPlaceholder("", false);
+          setStreamMode("mjpeg", "Worker is serving MJPEG fallback instead of WebRTC.");
+          setStatus("WebRTC unavailable. Using MJPEG fallback.", true);
+          return;
+        }
+
+        cancelMjpeg();
+        hideMedia();
+        setStreamMode("error", "WebRTC failed and MJPEG fallback is not available.");
+        setPlaceholder("Stream unavailable. WebRTC failed and MJPEG fallback is not available.", true);
+        setStatus("WebRTC failed: " + detail, true);
+      }
+
+      async function beginWebRtc(allowRetry, messageText) {
+        if (!currentTarget) {
+          currentTarget = resolveTargetBase();
+        }
+
+        const generation = ++connectGeneration;
+        clearReconnectTimer();
+        closePeer();
+        cancelMjpeg();
+        hideMedia();
+        setStreamMode("connecting", "Negotiating video over WebRTC...");
+        setPlaceholder(messageText || "Starting WebRTC...", true);
+        setStatus(messageText || "Starting WebRTC...");
+
+        try {
+          await openPeerConnection(generation);
+        } catch (error) {
+          if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) {
+            return;
+          }
+          closePeer();
+          if (allowRetry && !document.hidden && shouldRetryWebRtc(error)) {
+            scheduleReconnect(error);
+            return;
+          }
+          if (shouldSkipMjpegFallback(error)) {
+            const detail = formatError(error);
+            hideMedia();
+            setStreamMode("error", detail);
+            setPlaceholder("Stream unavailable. " + detail, true);
+            setStatus(detail, true);
+            return;
+          }
+          await tryMjpegFallback(generation, error);
+        }
+      }
+
+      async function beginPreferredStream(allowRetry, messageText) {
+        if (currentCapabilities && currentCapabilities.webrtcAvailable === false) {
+          await beginMjpegOnly(messageText);
+          return;
+        }
+        await beginWebRtc(allowRetry, messageText);
+      }
+
+      function disconnectStream(reason = "Disconnected.", isError = false) {
+        intentionalDisconnect = true;
+        pausedForHidden = false;
         pendingSwitch = null;
+        clearReconnectTimer();
+        stopStatePolling();
+        connectGeneration += 1;
+        closePeer();
+        cancelMjpeg();
+        hideMedia();
         setBusy(false);
-        setStreamVisible(false);
-        setPlaceholder('Connecting to ' + url + ' …', true);
-        streamEl().src = url;
-        setStatus('Connected to ' + url);
-        startStatePolling();
-        fetchState().catch((e) => setStatus('Connected, but state fetch failed: ' + e, true));
+        setStreamMode(isError ? "error" : "idle", isError ? reason : "Disconnected.");
+        setPlaceholder(reason, true);
+        setStatus(reason, isError);
       }
 
-      async function sendCmd(cmd, busyText = '') {
-        const isModelSwitch = (cmd === 'm' || cmd === 'n' || cmd === 'next' || cmd === 'prev' || cmd === 'previous');
-        const isQuit = (cmd === 'q' || cmd === 'quit' || cmd === 'exit' || cmd === 'stop');
+      function pauseStreamForHidden() {
+        if (intentionalDisconnect || pausedForHidden) {
+          return;
+        }
+        pausedForHidden = true;
+        clearReconnectTimer();
+        stopStatePolling();
+        connectGeneration += 1;
+        closePeer();
+        cancelMjpeg();
+        hideMedia();
+        setBusy(false);
+        setStreamMode("idle", "Paused while the tab is hidden.");
+        setPlaceholder("Paused while the tab is hidden.", true);
+        setStatus("Paused while the tab is hidden.");
+      }
+
+      async function connect() {
+        let target;
+        try {
+          target = resolveTargetBase();
+        } catch (error) {
+          disconnectStream(formatError(error), true);
+          return;
+        }
+
+        currentTarget = target;
+        intentionalDisconnect = false;
+        pausedForHidden = false;
+        pendingSwitch = null;
+        lastPollErrorText = "";
+        currentCapabilities = {
+          webrtcAvailable: true,
+          mjpegAvailable: true,
+          backend: ""
+        };
+        setBusy(false);
+        clearReconnectTimer();
+        setConnectionMode(target);
+        startStatePolling();
+        await refreshStateNow();
+        await beginPreferredStream(true, "Connecting to " + target.display + "...");
+      }
+
+      async function sendCmd(cmd, busyText = "") {
+        try {
+          if (!currentTarget) {
+            currentTarget = resolveTargetBase();
+            setConnectionMode(currentTarget);
+          }
+        } catch (error) {
+          setStatus(formatError(error), true);
+          return;
+        }
+
+        const isModelSwitch = isModelSwitchCommand(cmd);
+        const isQuit = isQuitCommand(cmd);
         const seq = ++cmdSeq;
 
         if (isModelSwitch) {
-          pendingSwitch = { seq, cmd };
-          setBusy(true, busyText || 'Switching model…');
-          setStatus((busyText || 'Switching model…') + ' This may take a bit on first download.');
+          pendingSwitch = { seq: seq, cmd: cmd };
+          setBusy(true, busyText || "Switching model...");
+          setStatus((busyText || "Switching model...") + " This may take a bit on first download.");
         } else if (isQuit) {
-          setStatus('Stopping worker…');
+          setStatus("Stopping worker...");
         }
 
         try {
-          const r = await fetch(base() + '/api/cmd', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cmd, seq })
-          });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
+          await workerFetch(
+            "/api/cmd",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({ cmd: cmd, seq: seq })
+            },
+            { expect: "json" }
+          );
 
           if (isQuit) {
-            disconnectStream('Worker stopped.');
+            disconnectStream("Worker stopped.");
             return;
           }
 
           if (!isModelSwitch) {
             await fetchState().catch(() => {});
           }
-        } catch (e) {
+        } catch (error) {
           if (isQuit) {
-            disconnectStream('Worker stop requested.', false);
+            disconnectStream("Worker stop requested.", false);
             return;
           }
           if (isModelSwitch) {
             pendingSwitch = null;
             setBusy(false);
           }
-          setStatus('Command failed: ' + e, true);
+          setStatus("Command failed: " + formatError(error), true);
         }
       }
 
-      streamEl().addEventListener('load', () => {
-        if (intentionalDisconnect) return;
-        setStreamVisible(true);
-        setPlaceholder('', false);
+      function initializeBaseInput() {
+        const input = baseInputEl();
+        if (IS_FILE_PROTOCOL) {
+          if (!input.value.trim() || input.value.trim() === "/") {
+            input.value = DEFAULT_DIRECT_BASE;
+          }
+          input.placeholder = DEFAULT_DIRECT_BASE;
+          return;
+        }
+        if (!input.value.trim()) {
+          input.value = "/";
+        }
+        input.placeholder = "/ or " + DEFAULT_DIRECT_BASE;
+      }
+
+      videoEl().addEventListener("loadedmetadata", () => {
+        if (intentionalDisconnect || pausedForHidden) {
+          return;
+        }
+        showVideo();
+        setPlaceholder("", false);
+        if (videoEl().srcObject) {
+          setStreamMode("webrtc", "Live video is streaming over WebRTC.");
+          setStatus("Receiving WebRTC video.");
+        }
       });
 
-      streamEl().addEventListener('error', () => {
-        if (intentionalDisconnect) return;
-        setStreamVisible(false);
-        setPlaceholder('Stream disconnected.', true);
-        setStatus('Stream disconnected.', true);
+      fallbackEl().addEventListener("error", () => {
+        const mode = document.getElementById("stateStreamMode").dataset.mode;
+        if (mode !== "mjpeg" || intentionalDisconnect || pausedForHidden) {
+          return;
+        }
+        cancelMjpeg();
+        hideMedia();
+        setStreamMode("error", "MJPEG fallback disconnected.");
+        setPlaceholder("MJPEG fallback disconnected.", true);
+        setStatus("MJPEG fallback disconnected.", true);
       });
 
-      setStreamVisible(false);
-      setPlaceholder('Connecting…', true);
-      connect();
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+          pauseStreamForHidden();
+          return;
+        }
+        if (pausedForHidden && !intentionalDisconnect) {
+          pausedForHidden = false;
+          startStatePolling();
+          refreshStateNow().finally(() => {
+            beginPreferredStream(true, "Resuming stream...").catch((error) => {
+              setStatus(formatError(error), true);
+            });
+          });
+        }
+      });
+
+      window.addEventListener("beforeunload", () => {
+        intentionalDisconnect = true;
+        clearReconnectTimer();
+        stopStatePolling();
+        connectGeneration += 1;
+        closePeer();
+        cancelMjpeg();
+      });
+
+      baseInputEl().addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          connect().catch((error) => {
+            setStatus(formatError(error), true);
+          });
+        }
+      });
+
+      initializeBaseInput();
+      setConnectionMode(IS_FILE_PROTOCOL ? { kind: "direct", display: DEFAULT_DIRECT_BASE } : { kind: "proxy" });
+      setStreamMode("idle", "WebRTC first. MJPEG fallback is used only when the worker does not expose WebRTC.");
+      setPlaceholder(IS_FILE_PROTOCOL ? "Connecting to local worker..." : "Connecting...", true);
+      connect().catch((error) => {
+        setStatus(formatError(error), true);
+      });
     </script>
   </body>
 </html>

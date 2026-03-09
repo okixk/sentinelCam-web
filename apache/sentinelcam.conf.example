@@ -1,0 +1,52 @@
+# Example Apache config for hosting the sentinelCam web UI.
+#
+# Required modules:
+#   mod_proxy
+#   mod_proxy_http
+#   mod_headers
+#   mod_ssl   (for HTTPS)
+#
+# The frontend stays static. Apache serves index.html and proxies the worker
+# endpoints so the browser can keep using same-origin URLs.
+# Local file:// direct mode is for localhost/dev only; hosted deployments should
+# keep the browser on this same-origin proxy path.
+
+<VirtualHost *:443>
+    ServerName sentinelcam.example.com
+    DocumentRoot /var/www/sentinelcam-web
+
+    SSLEngine on
+
+    ProxyPreserveHost On
+    SSLProxyEngine On
+
+    # Keep the worker bound to localhost when possible.
+    # Replace this token or remove the LocationMatch block if the worker does
+    # not require WEB_AUTH_TOKEN.
+    SetEnv SENTINELCAM_WORKER_TOKEN replace-with-a-long-random-secret
+
+    <LocationMatch "^/(api/state|api/cmd|api/webrtc/offer|health|stream\.mjpg)$">
+        RequestHeader set Authorization "Bearer %{SENTINELCAM_WORKER_TOKEN}e" env=SENTINELCAM_WORKER_TOKEN
+    </LocationMatch>
+
+    ProxyPass        /api/state         http://127.0.0.1:8080/api/state
+    ProxyPassReverse /api/state         http://127.0.0.1:8080/api/state
+
+    ProxyPass        /api/cmd           http://127.0.0.1:8080/api/cmd
+    ProxyPassReverse /api/cmd           http://127.0.0.1:8080/api/cmd
+
+    ProxyPass        /api/webrtc/offer  http://127.0.0.1:8080/api/webrtc/offer
+    ProxyPassReverse /api/webrtc/offer  http://127.0.0.1:8080/api/webrtc/offer
+
+    ProxyPass        /health            http://127.0.0.1:8080/health
+    ProxyPassReverse /health            http://127.0.0.1:8080/health
+
+    ProxyPass        /stream.mjpg       http://127.0.0.1:8080/stream.mjpg
+    ProxyPassReverse /stream.mjpg       http://127.0.0.1:8080/stream.mjpg
+
+    <Directory /var/www/sentinelcam-web>
+        Require all granted
+        Options FollowSymLinks
+        AllowOverride None
+    </Directory>
+</VirtualHost>

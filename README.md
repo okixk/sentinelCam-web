@@ -1,61 +1,170 @@
 # sentinelCam Web
 
-## Web-Ausgabe (Browser)
+`sentinelCam-web` is the browser UI for the sentinelCam stack.
 
-Standardmässig zeigt `webcam.py` das Ergebnis in einem OpenCV-Fenster.
-Wenn du es **headless** (z.B. auf einem Server/RPi) laufen lassen willst, kannst du den Stream auf einer Webseite anzeigen:
+It is a lightweight frontend that connects to a running [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) instance, displays the processed stream, shows worker state, and sends runtime control commands.
 
-### 1) Installation
+## What this repo does
 
-Zuerst muss das install.sh/install.bat ausgeführt werden.
+- connects to a worker over HTTP
+- displays the processed stream in the browser
+- prefers WebRTC for low-latency playback
+- falls back to MJPEG only when `/stream.mjpg` is available
+- polls worker state
+- sends commands like:
+  - next / previous model
+  - pose toggle
+  - overlay toggle
+  - inference toggle
+  - quit
+- supports same-origin proxy deployment for production
+- stays easy to move behind Apache or another reverse proxy
 
-```bash
-sh install.sh
+## What this repo does not do
+
+This repo does **not** run YOLO itself.  
+It does **not** capture cameras directly.  
+All video processing happens in [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker).
+
+## Where this repo fits
+
+Typical flow:
+
+`camera -> worker -> web browser`
+
+Recommended production flow:
+
+`camera -> worker -> apache/python web proxy -> browser`
+
+Future distributed flow:
+
+`camera -> sentinelCam-edge -> sentinelCam-worker -> sentinelCam-web`
+
+## Related repositories
+
+- **Processing backend:** [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker)  
+  Required. Provides WebRTC signaling, worker state, commands, health, and optional MJPEG fallback.
+
+- **Edge capture node:** [`sentinelCam-edge`](https://github.com/okixk/sentinelCam-edge)  
+  Optional future camera-side component that will feed streams into the worker.
+
+## Requirements
+
+You need a running worker first.
+
+Example worker base URL:
+
+```text
+http://127.0.0.1:8080
 ```
 
-Beim Installieren wird auch eine Testinstanz gestartet. Diese kann nach dem Installieren direkt mit `q` beendet werden.
+For production, same-origin proxy mode is recommended so the browser does not need direct worker access or the worker token.
 
-### 2) Schnell & ohne Zusatz-Dependencies: MJPEG
+## Quick start
 
-```bash
-./run.sh --web --stream mjpeg --port 8080
-```
+This repo contains:
 
-Dann im Browser öffnen:
+- a static frontend in `index.html`
+- a lightweight Python helper server in `web_server.py`
+- an Apache reverse-proxy example in `apache/sentinelcam.conf.example`
 
-* `http://localhost:8080/`
-
-MJPEG ist sehr kompatibel, aber nicht der effizienteste Codec.
-
-### 3) Niedrigere Latenz: WebRTC
-
-WebRTC liefert typischerweise die geringste End-to-End-Latenz im Browser.
-
-Dafür wird ein Zusatz-Paket mit dem install.sh/install.bat automatisch installiert.
-Für eine manuelle Installation kann dieser Befehl verwendet werden:
+Recommended local start:
 
 ```bash
-python -m pip install aiohttp aiortc av
+python web_server.py
 ```
 
-Start:
+Then open:
+
+```text
+http://127.0.0.1:3000/
+```
+
+Environment variables used by `web_server.py`:
+
+- `WORKER_BASE_URL`
+  - default: `http://127.0.0.1:8080`
+- `WORKER_TOKEN`
+  - optional
+  - if set, the proxy adds `Authorization: Bearer <WORKER_TOKEN>` server-side
+- `WEB_HOST`
+  - default: `127.0.0.1`
+- `WEB_PORT`
+  - default: `3000`
+
+Example:
 
 ```bash
-./run.sh --web --stream webrtc --port 8080 --webrtc-codec auto
+WORKER_BASE_URL=http://127.0.0.1:8080
+WORKER_TOKEN=replace-with-a-long-random-secret
+python web_server.py
 ```
 
-Codec-Präferenz (best-effort):
+The UI input field supports two connection modes:
 
-* `--webrtc-codec h264` (meist beste Kompatibilität / HW-Encoding möglich)
-* `--webrtc-codec vp8` / `vp9`
-* `--webrtc-codec av1` (nur wenn Browser + FFmpeg/PyAV Encoder unterstützen; oft CPU-lastig)
+- `/`
+  - same-origin proxy mode
+  - recommended for production
+  - works with `web_server.py` or Apache
+- `http://host:port`
+  - direct browser-to-worker mode
+  - only for local/dev use
+  - requires the worker to allow the browser origin with `WEB_ALLOWED_ORIGINS`
 
-Wenn `--stream auto` genutzt wird (Default) und WebRTC nicht verfügbar ist, fällt der Worker automatisch auf MJPEG zurück.
+## Worker endpoints used by this UI
 
-## Tipps für weniger Latenz
+The UI expects the worker to provide:
 
-* `--max-fps` hoch setzen (oder `--max-fps 0` für uncapped), damit der Worker nicht künstlich schläft.
-* `--width/--height` und `--imgsz` reduzieren, wenn Inference zu langsam ist.
-* Für RTSP-Quellen kann eine kleine Buffer-Queue helfen (wir setzen best-effort `CAP_PROP_BUFFERSIZE=1`).
+- `POST /api/webrtc/offer`
+- `GET /api/state`
+- `POST /api/cmd`
+- `GET /health`
+- `GET /stream.mjpg` only for explicit MJPEG fallback
 
-> Hinweis: Der eingebaute Web-Server hat **keine Auth**. Für echte Deployments bitte hinter Reverse-Proxy/VPN betreiben.
+So if your worker runs on `http://192.168.1.50:8080`, this UI can use:
+
+- `http://192.168.1.50:8080/api/webrtc/offer`
+- `http://192.168.1.50:8080/api/state`
+- `http://192.168.1.50:8080/api/cmd`
+- `http://192.168.1.50:8080/health`
+- `http://192.168.1.50:8080/stream.mjpg`
+
+In proxy mode, the browser stays on relative paths like:
+
+- `/api/webrtc/offer`
+- `/api/state`
+- `/api/cmd`
+- `/health`
+- `/stream.mjpg`
+
+## Features
+
+- live WebRTC stream viewer
+- explicit MJPEG fallback when available
+- worker status display
+- current preset / detection / pose / FPS / inference state
+- model switching with loading feedback
+- basic remote worker control from the browser
+- same-origin proxy support for production-safe token handling
+- easy Apache migration because the frontend stays static
+
+## Files
+
+- `index.html` - complete frontend UI
+- `web_server.py` - small Python static server and reverse proxy
+- `apache/sentinelcam.conf.example` - example Apache config for same-origin deployment
+
+## Notes
+
+- This repo is intentionally simple.
+- The frontend itself stays static so it can be served by Apache or another web server without code changes.
+- `WORKER_TOKEN` should stay server-side only.
+- For direct browser access, the worker must allow explicit origins with `WEB_ALLOWED_ORIGINS`.
+- Do not use wildcard origins in production.
+- Use HTTPS in production, or plain `http://localhost` only for local development.
+- WebRTC is always attempted first.
+- MJPEG fallback only works when the worker is actually serving `/stream.mjpg`.
+
+## Status
+
+Current WebRTC-first browser frontend for the sentinelCam stack, with optional Python proxy support and Apache-ready deployment.

@@ -6,3 +6,6 @@ run.bat
 run.sh
 webcam.properties
 webcam.py
+.log/
+.server*.log
+.web_server*.log
