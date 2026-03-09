@@ -299,6 +299,8 @@
           <div class="chip">Preset: <strong id="statePreset">-</strong></div>
           <div class="chip">Detection: <strong id="stateDet">-</strong></div>
           <div class="chip">Pose: <strong id="statePose">-</strong></div>
+          <div class="chip">Codec: <strong id="stateCodec">-</strong></div>
+          <div class="chip">Bitrate: <strong id="stateBitrate">-</strong></div>
           <div class="chip">FPS: <strong id="stateFps">-</strong></div>
           <div class="chip">Inference: <strong id="stateInference">-</strong></div>
         </div>
@@ -336,6 +338,7 @@
       const PAGE_PROTOCOL = window.location.protocol || "";
 
       let statePollTimer = null;
+      let codecPollTimer = null;
       let cmdSeq = 0;
       let pendingSwitch = null;
       let lastPollErrorText = "";
@@ -351,6 +354,7 @@
       let intentionalDisconnect = false;
       let pausedForHidden = false;
       let mjpegProbeId = 0;
+      let lastInboundVideoSample = null;
 
       function baseInputEl() {
         return document.getElementById("base");
@@ -374,6 +378,14 @@
 
       function streamModeNoteEl() {
         return document.getElementById("streamModeNote");
+      }
+
+      function codecEl() {
+        return document.getElementById("stateCodec");
+      }
+
+      function bitrateEl() {
+        return document.getElementById("stateBitrate");
       }
 
       function createError(message, details = {}) {
@@ -751,11 +763,143 @@
         }
       }
 
+      function setCodecLabel(value) {
+        codecEl().textContent = value || "-";
+      }
+
+      function setBitrateLabel(value) {
+        bitrateEl().textContent = value || "-";
+      }
+
+      function resetWebRtcMediaStats() {
+        lastInboundVideoSample = null;
+        setCodecLabel("-");
+        setBitrateLabel("-");
+      }
+
+      function formatBitrate(bps) {
+        if (!Number.isFinite(bps) || bps <= 0) {
+          return "-";
+        }
+        if (bps >= 1000000) {
+          return (bps / 1000000).toFixed(2) + " Mbps";
+        }
+        return Math.round(bps / 1000) + " kbps";
+      }
+
       function stopStatePolling() {
         if (statePollTimer) {
           window.clearInterval(statePollTimer);
           statePollTimer = null;
         }
+      }
+
+      function stopCodecPolling() {
+        if (codecPollTimer) {
+          window.clearInterval(codecPollTimer);
+          codecPollTimer = null;
+        }
+      }
+
+      async function readWebRtcMediaStats(peer) {
+        if (!peer || typeof peer.getStats !== "function") {
+          return { codec: "", bitrateBps: null };
+        }
+
+        try {
+          const stats = await peer.getStats();
+          let inboundReport = null;
+          let codecReport = null;
+
+          for (const report of stats.values()) {
+            const kind = report.kind || report.mediaType || "";
+            if (report.type === "inbound-rtp" && kind === "video") {
+              inboundReport = report;
+              if (report.codecId && typeof stats.get === "function") {
+                codecReport = stats.get(report.codecId) || null;
+              }
+              break;
+            }
+          }
+
+          if (!codecReport) {
+            for (const report of stats.values()) {
+              if (report.type === "codec" && /video\//i.test(report.mimeType || "")) {
+                codecReport = report;
+                break;
+              }
+            }
+          }
+
+          let codec = "";
+          if (codecReport) {
+            const mimeType = String(codecReport.mimeType || "");
+            const name = mimeType.includes("/") ? mimeType.split("/").pop() : mimeType;
+            codec = (name || "").toUpperCase();
+          }
+
+          let bitrateBps = null;
+          if (inboundReport && Number.isFinite(inboundReport.bytesReceived)) {
+            const timestampMs = typeof inboundReport.timestamp === "number"
+              ? inboundReport.timestamp
+              : Date.parse(inboundReport.timestamp || "");
+            const current = {
+              peer: peer,
+              bytesReceived: Number(inboundReport.bytesReceived),
+              timestampMs: Number(timestampMs)
+            };
+            if (
+              lastInboundVideoSample &&
+              lastInboundVideoSample.peer === peer &&
+              Number.isFinite(lastInboundVideoSample.timestampMs) &&
+              current.timestampMs > lastInboundVideoSample.timestampMs &&
+              current.bytesReceived >= lastInboundVideoSample.bytesReceived
+            ) {
+              const deltaBytes = current.bytesReceived - lastInboundVideoSample.bytesReceived;
+              const deltaMs = current.timestampMs - lastInboundVideoSample.timestampMs;
+              if (deltaMs > 0) {
+                bitrateBps = (deltaBytes * 8 * 1000) / deltaMs;
+              }
+            }
+            lastInboundVideoSample = current;
+          } else {
+            lastInboundVideoSample = null;
+          }
+
+          return { codec, bitrateBps };
+        } catch (error) {
+          return { codec: "", bitrateBps: null };
+        }
+      }
+
+      async function refreshWebRtcMediaLabels() {
+        const mode = document.getElementById("stateStreamMode").dataset.mode;
+        if (mode === "mjpeg") {
+          setCodecLabel("MJPEG");
+          setBitrateLabel("-");
+          return;
+        }
+        if (mode !== "webrtc" || !activePeer || intentionalDisconnect || pausedForHidden) {
+          resetWebRtcMediaStats();
+          return;
+        }
+
+        const peer = activePeer;
+        const generation = connectGeneration;
+        const media = await readWebRtcMediaStats(peer);
+        if (generation !== connectGeneration || activePeer !== peer) {
+          return;
+        }
+        setCodecLabel(media.codec || "WebRTC");
+        setBitrateLabel(formatBitrate(media.bitrateBps));
+      }
+
+      function startCodecPolling() {
+        stopCodecPolling();
+        codecPollTimer = window.setInterval(() => {
+          refreshWebRtcMediaLabels().catch(() => {});
+        }, 1500);
+        refreshWebRtcMediaLabels().catch(() => {});
       }
 
       function updateStateUi(state) {
@@ -849,6 +993,8 @@
           setPlaceholder("", false);
           setStreamMode("mjpeg", "Worker is running in MJPEG-only mode.");
           setStatus("Connected using MJPEG.");
+          setCodecLabel("MJPEG");
+          setBitrateLabel("-");
           return;
         }
 
@@ -906,6 +1052,7 @@
             setPlaceholder("", false);
             setStreamMode("webrtc", "Live video is streaming over WebRTC.");
             setStatus("Receiving WebRTC video.");
+            refreshWebRtcMediaLabels().catch(() => {});
           }
         };
 
@@ -1054,6 +1201,8 @@
           setPlaceholder("", false);
           setStreamMode("mjpeg", "Worker is serving MJPEG fallback instead of WebRTC.");
           setStatus("WebRTC unavailable. Using MJPEG fallback.", true);
+          setCodecLabel("MJPEG");
+          setBitrateLabel("-");
           return;
         }
 
@@ -1115,6 +1264,7 @@
         pendingSwitch = null;
         clearReconnectTimer();
         stopStatePolling();
+        stopCodecPolling();
         connectGeneration += 1;
         closePeer();
         cancelMjpeg();
@@ -1123,6 +1273,7 @@
         setStreamMode(isError ? "error" : "idle", isError ? reason : "Disconnected.");
         setPlaceholder(reason, true);
         setStatus(reason, isError);
+        resetWebRtcMediaStats();
       }
 
       function pauseStreamForHidden() {
@@ -1132,6 +1283,7 @@
         pausedForHidden = true;
         clearReconnectTimer();
         stopStatePolling();
+        stopCodecPolling();
         connectGeneration += 1;
         closePeer();
         cancelMjpeg();
@@ -1140,6 +1292,7 @@
         setStreamMode("idle", "Paused while the tab is hidden.");
         setPlaceholder("Paused while the tab is hidden.", true);
         setStatus("Paused while the tab is hidden.");
+        resetWebRtcMediaStats();
       }
 
       async function connect() {
@@ -1165,6 +1318,7 @@
         clearReconnectTimer();
         setConnectionMode(target);
         startStatePolling();
+        startCodecPolling();
         await refreshStateNow();
         await beginPreferredStream(true, "Connecting to " + target.display + "...");
       }
@@ -1250,6 +1404,7 @@
         if (videoEl().srcObject) {
           setStreamMode("webrtc", "Live video is streaming over WebRTC.");
           setStatus("Receiving WebRTC video.");
+          refreshWebRtcMediaLabels().catch(() => {});
         }
       });
 
@@ -1273,6 +1428,7 @@
         if (pausedForHidden && !intentionalDisconnect) {
           pausedForHidden = false;
           startStatePolling();
+          startCodecPolling();
           refreshStateNow().finally(() => {
             beginPreferredStream(true, "Resuming stream...").catch((error) => {
               setStatus(formatError(error), true);
@@ -1285,6 +1441,7 @@
         intentionalDisconnect = true;
         clearReconnectTimer();
         stopStatePolling();
+        stopCodecPolling();
         connectGeneration += 1;
         closePeer();
         cancelMjpeg();
@@ -1301,6 +1458,7 @@
       initializeBaseInput();
       setConnectionMode(IS_FILE_PROTOCOL ? { kind: "direct", display: DEFAULT_DIRECT_BASE } : { kind: "proxy" });
       setStreamMode("idle", "WebRTC first. MJPEG fallback is used only when the worker does not expose WebRTC.");
+      resetWebRtcMediaStats();
       setPlaceholder(IS_FILE_PROTOCOL ? "Connecting to local worker..." : "Connecting...", true);
       connect().catch((error) => {
         setStatus(formatError(error), true);
