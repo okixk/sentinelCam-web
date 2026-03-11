@@ -355,6 +355,7 @@
       let pausedForHidden = false;
       let mjpegProbeId = 0;
       let lastInboundVideoSample = null;
+      let webrtcConsecutiveFailures = 0;
 
       function baseInputEl() {
         return document.getElementById("base");
@@ -1067,11 +1068,18 @@
           }
           const state = peer.connectionState;
           if (state === "connected") {
+            webrtcConsecutiveFailures = 0;
             setStatus("WebRTC connected. Waiting for video...");
             return;
           }
           if (state === "failed" || state === "disconnected" || state === "closed") {
             if (intentionalDisconnect || pausedForHidden || document.hidden) {
+              return;
+            }
+            webrtcConsecutiveFailures++;
+            if (webrtcConsecutiveFailures > 1) {
+              closePeer();
+              tryMjpegFallback(generation, new Error("WebRTC connection " + state + " after retry."));
               return;
             }
             scheduleReconnect(new Error("WebRTC connection " + state + "."));
@@ -1319,6 +1327,7 @@
           mjpegAvailable: true,
           backend: ""
         };
+        webrtcConsecutiveFailures = 0;
         setBusy(false);
         clearReconnectTimer();
         setConnectionMode(target);
