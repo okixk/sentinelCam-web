@@ -21,7 +21,13 @@ INDEX_HTML = ROOT / "index.html"
 DEFAULT_WORKER_BASE_URL = "http://127.0.0.1:8080"
 WORKER_BASE_URL = (os.environ.get("WORKER_BASE_URL", DEFAULT_WORKER_BASE_URL) or DEFAULT_WORKER_BASE_URL).rstrip("/")
 WORKER_TOKEN = (os.environ.get("WORKER_TOKEN", "") or "").strip()
-WEB_HOST = (os.environ.get("WEB_HOST", "127.0.0.1") or "127.0.0.1").strip()
+
+# Set via environment variable PUBLIC=1 or change here directly.
+# True  = server listens on 192.168.80.2 (all network interfaces, accessible from other devices)
+# False = server listens on 127.0.0.1 (localhost only, default)
+PUBLIC = os.environ.get("PUBLIC", "0").strip() in ("1", "true", "yes")
+
+WEB_HOST = "192.168.80.2" if PUBLIC else "127.0.0.1"
 CAPABILITY_CACHE_TTL = 5.0
 
 try:

@@ -87,8 +87,9 @@ Environment variables used by `web_server.py`:
 - `WORKER_TOKEN`
   - optional
   - if set, the proxy adds `Authorization: Bearer <WORKER_TOKEN>` server-side
-- `WEB_HOST`
-  - default: `127.0.0.1`
+- `PUBLIC`
+  - default: `0` (localhost only)
+  - set to `1`, `true`, or `yes` to listen on the configured public interface (currently `192.168.80.2`) instead of localhost
 - `WEB_PORT`
   - default: `3000`
 
@@ -153,6 +154,24 @@ In proxy mode, the browser stays on relative paths like:
 - `index.html` - complete frontend UI
 - `web_server.py` - small Python static server and reverse proxy
 - `apache/sentinelcam.conf.example` - example Apache config for same-origin deployment
+
+## Network / Firewall
+
+The system has three components: **Client** (browser), **Web Server** (Python proxy, port 3000), and **Worker** (camera backend, port 8080).
+
+### Required open ports
+
+| Connection              | Port        | Protocol | Direction              | Purpose                              |
+|-------------------------|-------------|----------|------------------------|--------------------------------------|
+| Client → Web Server     | 3000        | TCP      | Client → Web Server    | HTML page + API proxy                |
+| Web Server → Worker     | 8080        | TCP      | Web Server → Worker    | HTTP proxy (API, signaling, MJPEG)   |
+| Client ↔ Worker         | 49152-65535 | UDP      | Bidirectional          | WebRTC media stream (direct)         |
+
+### Notes
+
+- **MJPEG fallback** does **not** need a direct Client ↔ Worker connection. All MJPEG traffic runs through the HTTP proxy (Client → 3000/TCP → 8080/TCP → Worker).
+- **WebRTC** requires a direct UDP connection between Client and Worker. Without it, only MJPEG works.
+- If Client and Worker are on different subnets, UDP routing or a TURN server is required for WebRTC.
 
 ## Notes
 
