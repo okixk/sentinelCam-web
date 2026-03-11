@@ -165,7 +165,7 @@ The system has three components: **Client** (browser), **Web Server** (Python pr
 |-------------------------|-------------|----------|------------------------|--------------------------------------|
 | Client → Web Server     | 3000        | TCP      | Client → Web Server    | HTML page + API proxy                |
 | Web Server → Worker     | 8080        | TCP      | Web Server → Worker    | HTTP proxy (API, signaling, MJPEG)   |
-| Client ↔ Worker         | 49152-65535 | UDP      | Bidirectional          | WebRTC media stream (direct)         |
+| Client ↔ Worker         | 50000–51000 | UDP      | Bidirectional          | WebRTC media stream (direct)         |
 
 ### Notes
 
