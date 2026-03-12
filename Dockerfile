@@ -1,7 +1,11 @@
-FROM python:3.11-slim
+FROM python:3.13-slim
 WORKDIR /app
 
-RUN groupadd -g 1000 sentinelcam && \
+RUN apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1000 sentinelcam && \
     useradd -u 1000 -g sentinelcam -m sentinelcam
 
 COPY requirements.txt .
