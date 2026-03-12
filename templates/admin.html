@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Admin – sentinelCam{% endblock %}
+{% block content %}
+<div class="page">
+  <h2>Admin Dashboard</h2>
+  <div class="admin-grid">
+    <!-- Worker Status -->
+    <div class="panel">
+      <h3>Worker Status</h3>
+      <div id="worker-status">Loading…</div>
+      <div class="row" style="margin-top:12px; flex-wrap:wrap;">
+        <button onclick="adminCmd('n', 'Prev model')" class="secondary">◀ Prev</button>
+        <button onclick="adminCmd('m', 'Next model')" class="secondary">▶ Next</button>
+        <button onclick="adminCmd('o', 'Toggle overlay')" class="secondary">Overlay</button>
+        <button onclick="adminCmd('i', 'Toggle inference')" class="secondary">Inference</button>
+      </div>
+    </div>
+    <!-- User Management -->
+    <div class="panel">
+      <h3>Users</h3>
+      <div id="users-table">Loading…</div>
+      <hr style="border-color:var(--border); margin:12px 0">
+      <h4 style="margin:0 0 8px">Create User</h4>
+      <form id="create-user-form" onsubmit="createUser(event)">
+        <div class="field"><label>Username</label><input id="new-username" required style="min-width:0; width:100%;" /></div>
+        <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" required style="min-width:0; width:100%;" /></div>
+        <div class="field">
+          <label>Role</label>
+          <select id="new-role" style="padding:10px 12px; font:inherit; border-radius:10px; border:1px solid var(--border); background:var(--panel-2); color:var(--text);">
+            <option value="viewer">Viewer</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <button type="submit">Create User</button>
+      </form>
+    </div>
+    <!-- Sessions -->
+    <div class="panel">
+      <h3>Active Sessions</h3>
+      <div id="sessions-table">Loading…</div>
+    </div>
+    <!-- System Info -->
+    <div class="panel">
+      <h3>System Info</h3>
+      <div id="system-info">Loading…</div>
+    </div>
+  </div>
+</div>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js"></script>
+{% endblock %}

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Gallery – sentinelCam{% endblock %}
+{% block content %}
+<div class="page">
+  <h2>Gallery</h2>
+  <div class="row" style="margin-bottom:16px; align-items:center;">
+    <select id="type-filter" onchange="loadGallery(1)">
+      <option value="">All</option>
+      <option value="image">📷 Images</option>
+      <option value="video">🎥 Videos</option>
+    </select>
+    <select id="sort-filter" onchange="loadGallery(1)">
+      <option value="newest">Newest first</option>
+      <option value="oldest">Oldest first</option>
+    </select>
+  </div>
+  <div id="gallery-grid" class="gallery-grid"></div>
+  <div id="pagination" class="pagination"></div>
+</div>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js"></script>
+{% endblock %}

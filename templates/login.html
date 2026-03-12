@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Login – sentinelCam{% endblock %}
+{% block content %}
+<div class="login-container">
+  <div class="panel login-panel">
+    <h1>sentinelCam</h1>
+    <div id="error-msg" class="error-msg" style="display:none"></div>
+    <form id="login-form">
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" type="text" name="username" autocomplete="username" required autofocus />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" autocomplete="current-password" required />
+      </div>
+      <button type="submit" id="login-btn">Login</button>
+    </form>
+    <div id="webauthn-section" style="display:none; margin-top:16px;">
+      <hr style="border-color:var(--border)">
+      <button type="button" id="passkey-btn" class="secondary" style="width:100%">🔑 Sign in with Passkey</button>
+    </div>
+  </div>
+</div>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/auth.js"></script>
+{% endblock %}
