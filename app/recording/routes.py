@@ -51,22 +51,6 @@ def _get_recordings_dir(user_id: int) -> Path:
     p = Path(settings.recordings_path) / str(user_id)
     p.mkdir(parents=True, exist_ok=True)
     return p
-
-
-async def _check_quota(user_id: int, add_bytes: int) -> None:
-    quota_bytes = settings.storage_quota_per_user_mb * 1024 * 1024
-    async with get_db() as conn:
-        cursor = await conn.execute(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM recordings WHERE user_id = ?",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        used = row[0] if row else 0
-    if used + add_bytes > quota_bytes:
-        raise HTTPException(413, f"Storage quota exceeded ({settings.storage_quota_per_user_mb} MB limit)")
-
-
-@router.post("/upload", status_code=201)
 async def upload_recording(
     request: Request,
     type: str = Form(...),
@@ -96,8 +80,6 @@ async def upload_recording(
     if not _check_magic_bytes(overlay_data, overlay_mime):
         raise HTTPException(400, "File content does not match expected type")
 
-    await _check_quota(user.id, len(overlay_data))
-
     rec_dir = _get_recordings_dir(user.id)
     file_uuid = str(uuid.uuid4()).replace("-", "")
     ext = EXTENSION_MAP.get(overlay_mime, "bin")
@@ -117,7 +99,25 @@ async def upload_recording(
                 raw_path = rec_dir / raw_filename
                 raw_path.write_bytes(raw_data)
 
+    quota_bytes = settings.storage_quota_per_user_mb * 1024 * 1024
+    add_bytes = len(overlay_data)
+
     async with get_db() as conn:
+        # Quota check inside the same transaction to prevent race conditions
+        cursor = await conn.execute(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM recordings WHERE user_id = ?",
+            (user.id,),
+        )
+        row = await cursor.fetchone()
+        used = row[0] if row else 0
+        if used + add_bytes > quota_bytes:
+            # Clean up already-written files before raising
+            overlay_path.unlink(missing_ok=True)
+            if raw_filename:
+                raw_path = rec_dir / raw_filename
+                raw_path.unlink(missing_ok=True)
+            raise HTTPException(413, f"Storage quota exceeded ({settings.storage_quota_per_user_mb} MB limit)")
+
         cursor = await conn.execute(
             "INSERT INTO recordings (user_id, type, filename, overlay_filename, raw_filename, size_bytes, duration_seconds) "
             "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
@@ -127,7 +127,7 @@ async def upload_recording(
                 overlay_filename,
                 overlay_filename,
                 raw_filename,
-                len(overlay_data),
+                add_bytes,
                 duration if type == "video" else None,
             ),
         )

@@ -9,3 +9,4 @@ webcam.py
 .log/
 .server*.log
 .web_server*.log
+data/

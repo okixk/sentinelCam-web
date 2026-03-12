@@ -788,7 +788,7 @@ document.addEventListener("visibilitychange", () => {
     pausedForHidden = false;
     startStatePolling(); startCodecPolling();
     refreshStateNow().finally(() => {
-      beginPreferredStream(true, "Resuming stream...").catch(error => setStatus(formatError(error), true));
+      beginPreferredStream(true, "Resuming stream...").catch(error => { console.error("Stream resume error:", error); setStatus(formatError(error), true); });
     });
   }
 });
