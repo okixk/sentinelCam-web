@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}sentinelCam{% endblock %}</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="/static/css/style.css" nonce="{{ request.state.csp_nonce }}">
+  <link rel="stylesheet" href="/static/css/style.css">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -18,7 +18,7 @@
       {% if user.role == 'admin' %}
       <a href="/admin" class="nav-link {% if request.url.path == '/admin' %}active{% endif %}">⚙️ Admin</a>
       {% endif %}
-      <button onclick="logout()" class="nav-btn">Logout</button>
+      <button id="logout-btn" class="nav-btn">Logout</button>
     </div>
   </nav>
   {% endif %}
@@ -33,6 +33,8 @@
       await fetch('/auth/logout', {method:'POST', headers:{'X-CSRF-Token': getCsrf()}});
       window.location.href = '/auth/login';
     }
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) logoutBtn.addEventListener('click', logout);
   </script>
   {% block scripts %}{% endblock %}
 </body>

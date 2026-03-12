@@ -52,7 +52,7 @@ async def security_headers_middleware(request: Request, call_next):
         response.headers["Content-Security-Policy"] = (
             f"default-src 'self'; "
             f"script-src 'self' 'nonce-{nonce}'; "
-            f"style-src 'self' 'nonce-{nonce}'; "
+            f"style-src 'self' 'unsafe-inline'; "
             f"img-src 'self' blob: data:; "
             f"media-src 'self' blob:; "
             f"connect-src 'self'; "

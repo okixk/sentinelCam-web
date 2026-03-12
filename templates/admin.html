@@ -9,10 +9,10 @@
       <h3>Worker Status</h3>
       <div id="worker-status">Loading…</div>
       <div class="row" style="margin-top:12px; flex-wrap:wrap;">
-        <button onclick="adminCmd('n', 'Prev model')" class="secondary">◀ Prev</button>
-        <button onclick="adminCmd('m', 'Next model')" class="secondary">▶ Next</button>
-        <button onclick="adminCmd('o', 'Toggle overlay')" class="secondary">Overlay</button>
-        <button onclick="adminCmd('i', 'Toggle inference')" class="secondary">Inference</button>
+        <button data-action="admin-cmd" data-cmd="n" data-label="Prev model" class="secondary">◀ Prev</button>
+        <button data-action="admin-cmd" data-cmd="m" data-label="Next model" class="secondary">▶ Next</button>
+        <button data-action="admin-cmd" data-cmd="o" data-label="Toggle overlay" class="secondary">Overlay</button>
+        <button data-action="admin-cmd" data-cmd="i" data-label="Toggle inference" class="secondary">Inference</button>
       </div>
     </div>
     <!-- User Management -->
@@ -21,7 +21,7 @@
       <div id="users-table">Loading…</div>
       <hr style="border-color:var(--border); margin:12px 0">
       <h4 style="margin:0 0 8px">Create User</h4>
-      <form id="create-user-form" onsubmit="createUser(event)">
+      <form id="create-user-form">
         <div class="field"><label>Username</label><input id="new-username" required style="min-width:0; width:100%;" /></div>
         <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" required style="min-width:0; width:100%;" /></div>
         <div class="field">

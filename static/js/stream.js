@@ -817,3 +817,14 @@ setStreamMode("idle", "WebRTC first. MJPEG fallback when worker does not expose 
 resetWebRtcMediaStats();
 setPlaceholder(IS_FILE_PROTOCOL ? "Connecting to local worker..." : "Connecting...", true);
 connect().catch(error => setStatus(formatError(error), true));
+
+// ===== Event delegation for data-action buttons =====
+document.addEventListener("click", event => {
+  const btn = event.target.closest("[data-action]");
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === "capture") captureFrame();
+  else if (action === "record") toggleRecord();
+  else if (action === "cmd") sendCmd(btn.dataset.cmd, btn.dataset.busy || undefined);
+  else if (action === "connect") connect().catch(error => setStatus(formatError(error), true));
+});

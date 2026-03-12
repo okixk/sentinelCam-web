@@ -8,14 +8,14 @@
     <div style="display:flex; gap:16px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
       <h2 style="margin:0;">{{ '📷' if rec.type == 'image' else '🎥' }} Recording #{{ rec.id }}</h2>
       {% if rec.raw_filename %}
-      <button id="overlay-toggle" onclick="toggleOverlay()" class="secondary">KI-Overlay: An</button>
+      <button id="overlay-toggle" class="secondary">KI-Overlay: An</button>
       {% else %}
       <button disabled class="secondary" title="Raw-Version nicht verfügbar">KI-Overlay: N/A</button>
       {% endif %}
     </div>
     {% if rec.type == 'image' %}
     <img id="main-media" src="/api/recordings/{{ rec.id }}/file" alt="Recording"
-         style="max-width:100%; border-radius:8px; cursor:zoom-in;" onclick="this.style.maxWidth=this.style.maxWidth?'':'100%'" />
+         style="max-width:100%; border-radius:8px; cursor:zoom-in;" />
     {% else %}
     <video controls style="width:100%; border-radius:8px;" src="/api/recordings/{{ rec.id }}/file"></video>
     {% endif %}
@@ -28,7 +28,7 @@
     </div>
     <div class="row" style="margin-top:16px;">
       <a href="/api/recordings/{{ rec.id }}/file" download class="button-like">⬇ Download</a>
-      <button onclick="deleteRecording({{ rec.id }})" class="danger">🗑 Delete</button>
+      <button id="delete-btn" class="danger">🗑 Delete</button>
     </div>
   </div>
 </div>
@@ -61,5 +61,19 @@
   // Format timestamp
   const el = document.getElementById('created-at');
   if (el) el.textContent = new Date(parseFloat(el.dataset.ts) * 1000).toLocaleString();
+
+  // Event listeners
+  const overlayBtn = document.getElementById('overlay-toggle');
+  if (overlayBtn) overlayBtn.addEventListener('click', toggleOverlay);
+
+  const deleteBtn = document.getElementById('delete-btn');
+  if (deleteBtn) deleteBtn.addEventListener('click', () => deleteRecording(recId));
+
+  const mainMedia = document.getElementById('main-media');
+  if (mainMedia && mainMedia.tagName === 'IMG') {
+    mainMedia.addEventListener('click', function() {
+      this.style.maxWidth = this.style.maxWidth ? '' : '100%';
+    });
+  }
 </script>
 {% endblock %}

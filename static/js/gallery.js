@@ -125,3 +125,7 @@ async function loadGallery(page = 1) {
 
 // Initial load
 loadGallery(1);
+
+// Filter change listeners
+document.getElementById('type-filter').addEventListener('change', () => loadGallery(1));
+document.getElementById('sort-filter').addEventListener('change', () => loadGallery(1));

@@ -23,8 +23,8 @@
       </div>
       <div id="status" role="status" aria-live="polite" style="margin-top:8px; color:var(--muted); min-height:1.5em;">Idle.</div>
       <div class="row" style="margin-top:8px;">
-        <button id="capture-btn" onclick="captureFrame()">📷 Capture</button>
-        <button id="record-btn" onclick="toggleRecord()">⏺ Record</button>
+        <button id="capture-btn" data-action="capture">📷 Capture</button>
+        <button id="record-btn" data-action="record">⏺ Record</button>
         <span id="record-timer" style="display:none; color:var(--danger); font-variant-numeric:tabular-nums; padding:10px 4px;"></span>
       </div>
     </div>
@@ -46,18 +46,18 @@
       <hr style="border-color:var(--border); margin: 12px 0">
       <h3 style="margin:0 0 12px">Controls</h3>
       <div class="row">
-        <button id="btnPrev" onclick="sendCmd('n', 'Switching to previous model...')" class="secondary">◀ Prev</button>
-        <button id="btnNext" onclick="sendCmd('m', 'Switching to next model...')" class="secondary">▶ Next</button>
-        <button onclick="sendCmd('p')" class="secondary">Pose</button>
-        <button onclick="sendCmd('o')" class="secondary">Overlay</button>
-        <button onclick="sendCmd('i')" class="secondary">Inference</button>
-        <button onclick="sendCmd('q')" class="danger">Quit</button>
+        <button id="btnPrev" data-action="cmd" data-cmd="n" data-busy="Switching to previous model..." class="secondary">◀ Prev</button>
+        <button id="btnNext" data-action="cmd" data-cmd="m" data-busy="Switching to next model..." class="secondary">▶ Next</button>
+        <button data-action="cmd" data-cmd="p" class="secondary">Pose</button>
+        <button data-action="cmd" data-cmd="o" class="secondary">Overlay</button>
+        <button data-action="cmd" data-cmd="i" class="secondary">Inference</button>
+        <button data-action="cmd" data-cmd="q" class="danger">Quit</button>
       </div>
       <div class="field" style="margin-top:8px;">
         <label for="base">Worker URL</label>
         <input id="base" type="text" placeholder="/ or http://127.0.0.1:8080" style="width:100%; min-width:0;" spellcheck="false" aria-label="Worker base URL" />
       </div>
-      <button id="btnConnect" onclick="connect()" style="margin-top:8px;">Connect</button>
+      <button id="btnConnect" data-action="connect" style="margin-top:8px;">Connect</button>
     </div>
   </div>
 </div>

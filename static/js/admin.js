@@ -70,9 +70,9 @@ async function loadUsers() {
         </td>
         <td>${formatDate(u.last_login)}</td>
         <td>
-          <button onclick="saveRole(${u.id})" class="secondary" style="padding:4px 8px;font-size:0.8rem;">Save Role</button>
-          <button onclick="resetPassword(${u.id}, '${escHtml(u.username)}')" class="secondary" style="padding:4px 8px;font-size:0.8rem;">Reset PW</button>
-          <button onclick="deleteUser(${u.id}, '${escHtml(u.username)}')" class="danger" style="padding:4px 8px;font-size:0.8rem;">Delete</button>
+          <button data-action="save-role" data-user-id="${u.id}" class="secondary" style="padding:4px 8px;font-size:0.8rem;">Save Role</button>
+          <button data-action="reset-pw" data-user-id="${u.id}" data-username="${escHtml(u.username)}" class="secondary" style="padding:4px 8px;font-size:0.8rem;">Reset PW</button>
+          <button data-action="delete-user" data-user-id="${u.id}" data-username="${escHtml(u.username)}" class="danger" style="padding:4px 8px;font-size:0.8rem;">Delete</button>
         </td>
       </tr>`;
     }
@@ -185,7 +185,7 @@ async function loadSessions() {
         <td>${escHtml(s.username)}</td>
         <td>${escHtml(s.ip_address || '–')}</td>
         <td>${formatDate(s.expires_at)}</td>
-        <td><button onclick="revokeSession('${s.id}')" class="danger" style="padding:4px 8px;font-size:0.8rem;">Revoke</button></td>
+        <td><button data-action="revoke-session" data-session-id="${s.id}" class="danger" style="padding:4px 8px;font-size:0.8rem;">Revoke</button></td>
       </tr>`;
     }
     html += '</tbody></table>';
@@ -227,6 +227,20 @@ loadWorkerStatus();
 loadUsers();
 loadSessions();
 loadSystemInfo();
+
+// ===== Event delegation =====
+document.addEventListener('click', event => {
+  const btn = event.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === 'admin-cmd') adminCmd(btn.dataset.cmd, btn.dataset.label);
+  else if (action === 'save-role') saveRole(parseInt(btn.dataset.userId));
+  else if (action === 'reset-pw') resetPassword(parseInt(btn.dataset.userId), btn.dataset.username);
+  else if (action === 'delete-user') deleteUser(parseInt(btn.dataset.userId), btn.dataset.username);
+  else if (action === 'revoke-session') revokeSession(btn.dataset.sessionId);
+});
+
+document.getElementById('create-user-form').addEventListener('submit', createUser);
 
 // Poll worker status every 2 seconds
 setInterval(loadWorkerStatus, 2000);
