@@ -1,0 +1,26 @@
+services:
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - WORKER_BASE_URL=http://host.docker.internal:8080
+      - WORKER_TOKEN=${WORKER_TOKEN}
+      - WEB_PORT=3000
+      - PUBLIC=1
+      - INITIAL_ADMIN_USER=${ADMIN_USER:-admin}
+      - INITIAL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - WEBAUTHN_RP_ID=localhost
+    volumes:
+      - web-data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+        "import urllib.request; urllib.request.urlopen('http://localhost:3000/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  web-data:

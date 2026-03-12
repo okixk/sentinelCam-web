@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Recording – sentinelCam{% endblock %}
+{% block content %}
+<div class="page">
+  <a href="/gallery" class="back-link">← Back to Gallery</a>
+  {% set rec = recording %}
+  <div class="panel" style="margin-top:16px;">
+    <div style="display:flex; gap:16px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
+      <h2 style="margin:0;">{{ '📷' if rec.type == 'image' else '🎥' }} Recording #{{ rec.id }}</h2>
+      {% if rec.raw_filename %}
+      <button id="overlay-toggle" class="secondary">KI-Overlay: An</button>
+      {% else %}
+      <button disabled class="secondary" title="Raw-Version nicht verfügbar">KI-Overlay: N/A</button>
+      {% endif %}
+    </div>
+    {% if rec.type == 'image' %}
+    <img id="main-media" src="/api/recordings/{{ rec.id }}/file" alt="Recording"
+         style="max-width:100%; border-radius:8px; cursor:zoom-in;" />
+    {% else %}
+    <video controls style="width:100%; border-radius:8px;" src="/api/recordings/{{ rec.id }}/file"></video>
+    {% endif %}
+    <div class="metadata-panel" style="margin-top:12px; color:var(--muted); font-size:0.9rem;">
+      <p style="margin:4px 0">Type: {{ rec.type }}</p>
+      <p style="margin:4px 0">Size: {{ (rec.size_bytes / 1024 / 1024) | round(2) }} MB</p>
+      <p style="margin:4px 0">Created: <span id="created-at" data-ts="{{ rec.created_at }}"></span></p>
+      {% if rec.duration_seconds %}<p style="margin:4px 0">Duration: {{ rec.duration_seconds | round(1) }}s</p>{% endif %}
+      <p style="margin:4px 0">By: {{ rec.username }}</p>
+    </div>
+    <div class="row" style="margin-top:16px; flex-wrap:wrap; gap:8px;">
+      <a href="/api/recordings/{{ rec.id }}/file" download class="button-like">⬇ Download</a>
+      {% if rec.user_id == user.id %}
+      <button id="share-btn" class="secondary">{{ '🔓 Shared' if rec.shared else '🔒 Private' }}</button>
+      {% endif %}
+      {% if rec.user_id == user.id or user.role == 'admin' %}
+      <button id="delete-btn" class="danger">🗑 Delete</button>
+      {% endif %}
+    </div>
+  </div>
+</div>
+<script nonce="{{ request.state.csp_nonce }}">
+  const recId = {{ rec.id }};
+  const hasRaw = {{ 'true' if rec.raw_filename else 'false' }};
+  let showingOverlay = true;
+  let isShared = {{ 'true' if rec.shared else 'false' }};
+
+  function toggleOverlay() {
+    if (!hasRaw) return;
+    showingOverlay = !showingOverlay;
+    const img = document.getElementById('main-media');
+    if (img) {
+      img.src = showingOverlay
+        ? `/api/recordings/${recId}/file`
+        : `/api/recordings/${recId}/file?variant=raw`;
+    }
+    document.getElementById('overlay-toggle').textContent =
+      'KI-Overlay: ' + (showingOverlay ? 'An' : 'Aus');
+  }
+
+  async function deleteRecording(id) {
+    if (!confirm('Delete this recording?')) return;
+    const csrf = document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
+    const r = await fetch(`/api/recordings/${id}`, {method:'DELETE', headers:{'X-CSRF-Token':csrf}});
+    if (r.ok) window.location.href = '/gallery';
+    else alert('Delete failed');
+  }
+
+  // Format timestamp
+  const el = document.getElementById('created-at');
+  if (el) el.textContent = new Date(parseFloat(el.dataset.ts) * 1000).toLocaleString();
+
+  // Event listeners
+  const overlayBtn = document.getElementById('overlay-toggle');
+  if (overlayBtn) overlayBtn.addEventListener('click', toggleOverlay);
+
+  const deleteBtn = document.getElementById('delete-btn');
+  if (deleteBtn) deleteBtn.addEventListener('click', () => deleteRecording(recId));
+
+  const shareBtn = document.getElementById('share-btn');
+  if (shareBtn) shareBtn.addEventListener('click', async () => {
+    const csrf = document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
+    const r = await fetch(`/api/recordings/${recId}/share`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+      body: JSON.stringify({ shared: !isShared })
+    });
+    if (r.ok) {
+      isShared = !isShared;
+      shareBtn.textContent = isShared ? '🔓 Shared' : '🔒 Private';
+    } else {
+      alert('Share toggle failed');
+    }
+  });
+
+  const mainMedia = document.getElementById('main-media');
+  if (mainMedia && mainMedia.tagName === 'IMG') {
+    mainMedia.addEventListener('click', function() {
+      this.style.maxWidth = this.style.maxWidth ? '' : '100%';
+    });
+  }
+</script>
+{% endblock %}

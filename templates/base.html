@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}sentinelCam{% endblock %}</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/css/style.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  {% if user is defined %}
+  <nav class="navbar">
+    <div class="nav-brand">sentinelCam</div>
+    <div class="nav-links">
+      <a href="/" class="nav-link {% if request.url.path == '/' %}active{% endif %}">📹 Stream</a>
+      <a href="/gallery" class="nav-link {% if request.url.path.startswith('/gallery') %}active{% endif %}">🖼 Gallery</a>
+      {% if user.role == 'admin' %}
+      <a href="/admin" class="nav-link {% if request.url.path == '/admin' %}active{% endif %}">⚙️ Admin</a>
+      {% endif %}
+      <button id="logout-btn" class="nav-btn">Logout</button>
+    </div>
+  </nav>
+  {% endif %}
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+  <script nonce="{{ request.state.csp_nonce }}">
+    function getCsrf() {
+      return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
+    }
+    async function logout() {
+      await fetch('/auth/logout', {method:'POST', headers:{'X-CSRF-Token': getCsrf()}});
+      window.location.href = '/auth/login';
+    }
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) logoutBtn.addEventListener('click', logout);
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
