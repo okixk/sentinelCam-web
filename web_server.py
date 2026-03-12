@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import secrets
 import sys
 import threading
 import time
@@ -13,6 +15,8 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+log = logging.getLogger("sentinelCam.web")
 
 
 ROOT = Path(__file__).resolve().parent
@@ -23,11 +27,11 @@ WORKER_BASE_URL = (os.environ.get("WORKER_BASE_URL", DEFAULT_WORKER_BASE_URL) or
 WORKER_TOKEN = (os.environ.get("WORKER_TOKEN", "") or "").strip()
 
 # Set via environment variable PUBLIC=1 or change here directly.
-# True  = server listens on 192.168.80.2 (all network interfaces, accessible from other devices)
+# True  = server listens on 0.0.0.0 (all network interfaces, accessible from other devices)
 # False = server listens on 127.0.0.1 (localhost only, default)
 PUBLIC = os.environ.get("PUBLIC", "0").strip() in ("1", "true", "yes")
 
-WEB_HOST = "192.168.80.2" if PUBLIC else "127.0.0.1"
+WEB_HOST = "0.0.0.0" if PUBLIC else "127.0.0.1"
 CAPABILITY_CACHE_TTL = 5.0
 
 try:
@@ -204,11 +208,11 @@ class SentinelCamHandler(BaseHTTPRequestHandler):
         self._send_not_found()
 
     def log_message(self, fmt: str, *args: object) -> None:
-        sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), fmt % args))
+        log.info("%s - %s", self.address_string(), fmt % args)
 
     def _serve_index(self) -> None:
         try:
-            payload = INDEX_HTML.read_bytes()
+            raw = INDEX_HTML.read_bytes()
         except OSError as exc:
             self._send_json(
                 500,
@@ -219,9 +223,13 @@ class SentinelCamHandler(BaseHTTPRequestHandler):
             )
             return
 
+        nonce = secrets.token_urlsafe(24)
+        payload = raw.replace(b"<script>", f'<script nonce="{nonce}">'.encode(), 1)
+
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", f"script-src 'nonce-{nonce}'")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -266,7 +274,7 @@ class SentinelCamHandler(BaseHTTPRequestHandler):
                     body_override=body_override,
                 )
                 if wants_shutdown:
-                    self._schedule_server_shutdown()
+                    log.info("Quit command forwarded to worker – proxy stays online")
         except urllib.error.HTTPError as exc:
             body_override = None
             if parsed.path == "/api/state":
@@ -282,16 +290,6 @@ class SentinelCamHandler(BaseHTTPRequestHandler):
                     "upstream": target_url,
                 },
             )
-
-    def _schedule_server_shutdown(self) -> None:
-        def _shutdown() -> None:
-            time.sleep(0.15)
-            try:
-                self.server.shutdown()
-            except Exception:
-                pass
-
-        threading.Thread(target=_shutdown, daemon=True).start()
 
     def _relay_response(
         self,
@@ -343,12 +341,16 @@ class SentinelCamHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    print(f"Serving sentinelCam web on http://{WEB_HOST}:{WEB_PORT}")
-    print(f"Proxy target: {WORKER_BASE_URL}")
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        level=logging.INFO,
+    )
+    log.info("Serving sentinelCam web on http://%s:%s", WEB_HOST, WEB_PORT)
+    log.info("Proxy target: %s", WORKER_BASE_URL)
     if WORKER_TOKEN:
-        print("Worker token: configured server-side")
+        log.info("Worker token: configured server-side")
     else:
-        print("Worker token: not configured")
+        log.warning("Worker token: not configured")
 
     server = ThreadingHTTPServer((WEB_HOST, WEB_PORT), SentinelCamHandler)
     server.daemon_threads = True

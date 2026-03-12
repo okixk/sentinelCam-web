@@ -85,6 +85,16 @@
         cursor: not-allowed;
       }
 
+      button:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
       .secondary {
         background: #374151;
       }
@@ -280,16 +290,16 @@
             placeholder="/ or http://127.0.0.1:8080"
             aria-label="Worker base URL"
           />
-          <button onclick="connect()">Connect</button>
-          <button id="btnPrev" class="secondary" onclick="sendCmd('n', 'Switching to previous model...')">Prev model</button>
-          <button id="btnNext" class="secondary" onclick="sendCmd('m', 'Switching to next model...')">Next model</button>
-          <button class="secondary" onclick="sendCmd('p')">Pose</button>
-          <button class="secondary" onclick="sendCmd('o')">Overlay</button>
-          <button class="secondary" onclick="sendCmd('i')">Inference</button>
-          <button class="danger" onclick="sendCmd('q')">Quit</button>
+          <button id="btnConnect" aria-label="Connect to worker">Connect</button>
+          <button id="btnPrev" class="secondary" aria-label="Switch to previous model">Prev model</button>
+          <button id="btnNext" class="secondary" aria-label="Switch to next model">Next model</button>
+          <button id="btnPose" class="secondary" aria-label="Toggle pose estimation">Pose</button>
+          <button id="btnOverlay" class="secondary" aria-label="Toggle overlay">Overlay</button>
+          <button id="btnInference" class="secondary" aria-label="Toggle inference">Inference</button>
+          <button id="btnQuit" class="danger" aria-label="Quit worker">Quit</button>
         </div>
 
-        <div id="status">Idle.</div>
+        <div id="status" role="status" aria-live="polite">Idle.</div>
         <div id="connectionNote" class="small">Same-origin proxy mode. The web server forwards /api/* and /stream.mjpg to the worker.</div>
         <div id="streamModeNote" class="small">WebRTC first. MJPEG fallback is used only when the worker does not expose WebRTC.</div>
 
@@ -320,7 +330,7 @@
           </div>
         </div>
         <div id="streamPlaceholder" class="stream-placeholder">Connecting...</div>
-        <video id="stream" class="stream-media" autoplay playsinline muted></video>
+        <video id="stream" class="stream-media" autoplay playsinline muted aria-label="Live camera feed"></video>
         <img id="streamFallback" class="stream-media" alt="sentinelCam MJPEG fallback" />
       </div>
     </div>
@@ -357,37 +367,26 @@
       let lastInboundVideoSample = null;
       let webrtcConsecutiveFailures = 0;
 
-      function baseInputEl() {
-        return document.getElementById("base");
-      }
-
-      function videoEl() {
-        return document.getElementById("stream");
-      }
-
-      function fallbackEl() {
-        return document.getElementById("streamFallback");
-      }
-
-      function placeholderEl() {
-        return document.getElementById("streamPlaceholder");
-      }
-
-      function connectionNoteEl() {
-        return document.getElementById("connectionNote");
-      }
-
-      function streamModeNoteEl() {
-        return document.getElementById("streamModeNote");
-      }
-
-      function codecEl() {
-        return document.getElementById("stateCodec");
-      }
-
-      function bitrateEl() {
-        return document.getElementById("stateBitrate");
-      }
+      const baseInputEl = document.getElementById("base");
+      const videoEl = document.getElementById("stream");
+      const fallbackEl = document.getElementById("streamFallback");
+      const placeholderEl = document.getElementById("streamPlaceholder");
+      const connectionNoteEl = document.getElementById("connectionNote");
+      const streamModeNoteEl = document.getElementById("streamModeNote");
+      const codecEl = document.getElementById("stateCodec");
+      const bitrateEl = document.getElementById("stateBitrate");
+      const statusEl = document.getElementById("status");
+      const busyOverlayEl = document.getElementById("busyOverlay");
+      const busyTitleEl = document.getElementById("busyTitle");
+      const btnPrevEl = document.getElementById("btnPrev");
+      const btnNextEl = document.getElementById("btnNext");
+      const stateConnectionEl = document.getElementById("stateConnection");
+      const stateStreamModeEl = document.getElementById("stateStreamMode");
+      const statePresetEl = document.getElementById("statePreset");
+      const stateDetEl = document.getElementById("stateDet");
+      const statePoseEl = document.getElementById("statePose");
+      const stateFpsEl = document.getElementById("stateFps");
+      const stateInferenceEl = document.getElementById("stateInference");
 
       function createError(message, details = {}) {
         const error = new Error(message);
@@ -494,7 +493,7 @@
       }
 
       function resolveTargetBase() {
-        const raw = baseInputEl().value.trim();
+        const raw = baseInputEl.value.trim();
 
         if (IS_FILE_PROTOCOL) {
           if (!raw || raw === "/") {
@@ -646,28 +645,26 @@
       }
 
       function setStatus(text, isError = false) {
-        const el = document.getElementById("status");
-        el.textContent = text;
-        el.style.color = isError ? "var(--danger)" : "var(--muted)";
+        statusEl.textContent = text;
+        statusEl.style.color = isError ? "var(--danger)" : "var(--muted)";
       }
 
       function setBusy(on, title = "Switching model...") {
-        const overlay = document.getElementById("busyOverlay");
-        document.getElementById("busyTitle").textContent = title;
-        overlay.classList.toggle("show", !!on);
-        document.getElementById("btnPrev").disabled = !!on;
-        document.getElementById("btnNext").disabled = !!on;
+        busyTitleEl.textContent = title;
+        busyOverlayEl.classList.toggle("show", !!on);
+        btnPrevEl.disabled = !!on;
+        btnNextEl.disabled = !!on;
       }
 
       function setPlaceholder(text = "Not connected.", show = true) {
-        const el = placeholderEl();
+        const el = placeholderEl;
         el.textContent = text;
         el.classList.toggle("hidden", !show);
       }
 
       function setConnectionMode(target) {
-        document.getElementById("stateConnection").textContent = target.kind === "proxy" ? "Proxy" : "Direct";
-        const note = connectionNoteEl();
+        stateConnectionEl.textContent = target.kind === "proxy" ? "Proxy" : "Direct";
+        const note = connectionNoteEl;
         if (target.kind === "proxy") {
           note.textContent = "Same-origin proxy mode. The web server forwards /api/* and /stream.mjpg to the worker.";
           note.className = "small";
@@ -689,11 +686,10 @@
           mjpeg: "MJPEG fallback",
           error: "Error"
         };
-        const el = document.getElementById("stateStreamMode");
-        el.textContent = labelMap[mode] || "Idle";
-        el.dataset.mode = mode;
+        stateStreamModeEl.textContent = labelMap[mode] || "Idle";
+        stateStreamModeEl.dataset.mode = mode;
 
-        const detailEl = streamModeNoteEl();
+        const detailEl = streamModeNoteEl;
         detailEl.textContent = detail;
         if (mode === "error") {
           detailEl.className = "small error";
@@ -705,22 +701,22 @@
       }
 
       function hideMedia() {
-        videoEl().classList.remove("show");
-        fallbackEl().classList.remove("show");
+        videoEl.classList.remove("show");
+        fallbackEl.classList.remove("show");
       }
 
       function showVideo() {
         hideMedia();
-        videoEl().classList.add("show");
+        videoEl.classList.add("show");
       }
 
       function showFallback() {
         hideMedia();
-        fallbackEl().classList.add("show");
+        fallbackEl.classList.add("show");
       }
 
       function clearVideoStream() {
-        const video = videoEl();
+        const video = videoEl;
         const stream = video.srcObject;
         if (stream && typeof stream.getTracks === "function") {
           stream.getTracks().forEach((track) => track.stop());
@@ -746,7 +742,7 @@
       }
 
       function clearFallbackImage() {
-        const img = fallbackEl();
+        const img = fallbackEl;
         img.classList.remove("show");
         img.removeAttribute("src");
         img.src = "";
@@ -765,11 +761,11 @@
       }
 
       function setCodecLabel(value) {
-        codecEl().textContent = value || "-";
+        codecEl.textContent = value || "-";
       }
 
       function setBitrateLabel(value) {
-        bitrateEl().textContent = value || "-";
+        bitrateEl.textContent = value || "-";
       }
 
       function resetWebRtcMediaStats() {
@@ -874,7 +870,7 @@
       }
 
       async function refreshWebRtcMediaLabels() {
-        const mode = document.getElementById("stateStreamMode").dataset.mode;
+        const mode = stateStreamModeEl.dataset.mode;
         if (mode === "mjpeg") {
           setCodecLabel("MJPEG");
           setBitrateLabel("-");
@@ -904,11 +900,11 @@
       }
 
       function updateStateUi(state) {
-        document.getElementById("statePreset").textContent = state && state.preset ? state.preset : "-";
-        document.getElementById("stateDet").textContent = state && state.det ? state.det : "-";
-        document.getElementById("statePose").textContent = state && state.pose_enabled ? "on" : "off";
-        document.getElementById("stateFps").textContent = state && Number.isFinite(state.fps) ? state.fps.toFixed(1) : "-";
-        document.getElementById("stateInference").textContent = state && state.inference_enabled ? "on" : "off";
+        statePresetEl.textContent = state && state.preset ? state.preset : "-";
+        stateDetEl.textContent = state && state.det ? state.det : "-";
+        statePoseEl.textContent = state && state.pose_enabled ? "on" : "off";
+        stateFpsEl.textContent = state && Number.isFinite(state.fps) ? state.fps.toFixed(1) : "-";
+        stateInferenceEl.textContent = state && state.inference_enabled ? "on" : "off";
       }
 
       async function fetchState() {
@@ -1053,7 +1049,7 @@
           receivedVideoTrack = true;
           const stream = event.streams && event.streams[0];
           if (stream) {
-            videoEl().srcObject = stream;
+            videoEl.srcObject = stream;
             showVideo();
             setPlaceholder("", false);
             setStreamMode("webrtc", "Live video is streaming over WebRTC.");
@@ -1145,7 +1141,7 @@
       }
 
       function tryMjpegStream(url, generation) {
-        const img = fallbackEl();
+        const img = fallbackEl;
         const probeId = ++mjpegProbeId;
         clearFallbackImage();
 
@@ -1395,7 +1391,7 @@
       }
 
       function initializeBaseInput() {
-        const input = baseInputEl();
+        const input = baseInputEl;
         if (IS_FILE_PROTOCOL) {
           if (!input.value.trim() || input.value.trim() === "/") {
             input.value = DEFAULT_DIRECT_BASE;
@@ -1409,21 +1405,21 @@
         input.placeholder = "/ or " + DEFAULT_DIRECT_BASE;
       }
 
-      videoEl().addEventListener("loadedmetadata", () => {
+      videoEl.addEventListener("loadedmetadata", () => {
         if (intentionalDisconnect || pausedForHidden) {
           return;
         }
         showVideo();
         setPlaceholder("", false);
-        if (videoEl().srcObject) {
+        if (videoEl.srcObject) {
           setStreamMode("webrtc", "Live video is streaming over WebRTC.");
           setStatus("Receiving WebRTC video.");
           refreshWebRtcMediaLabels().catch(() => {});
         }
       });
 
-      fallbackEl().addEventListener("error", () => {
-        const mode = document.getElementById("stateStreamMode").dataset.mode;
+      fallbackEl.addEventListener("error", () => {
+        const mode = stateStreamModeEl.dataset.mode;
         if (mode !== "mjpeg" || intentionalDisconnect || pausedForHidden) {
           return;
         }
@@ -1461,13 +1457,27 @@
         cancelMjpeg();
       });
 
-      baseInputEl().addEventListener("keydown", (event) => {
+      baseInputEl.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           connect().catch((error) => {
             setStatus(formatError(error), true);
           });
         }
       });
+
+      document.getElementById("btnConnect").addEventListener("click", () => {
+        connect().catch((error) => setStatus(formatError(error), true));
+      });
+      document.getElementById("btnPrev").addEventListener("click", () => {
+        sendCmd("n", "Switching to previous model...");
+      });
+      document.getElementById("btnNext").addEventListener("click", () => {
+        sendCmd("m", "Switching to next model...");
+      });
+      document.getElementById("btnPose").addEventListener("click", () => sendCmd("p"));
+      document.getElementById("btnOverlay").addEventListener("click", () => sendCmd("o"));
+      document.getElementById("btnInference").addEventListener("click", () => sendCmd("i"));
+      document.getElementById("btnQuit").addEventListener("click", () => sendCmd("q"));
 
       initializeBaseInput();
       setConnectionMode(IS_FILE_PROTOCOL ? { kind: "direct", display: DEFAULT_DIRECT_BASE } : { kind: "proxy" });
