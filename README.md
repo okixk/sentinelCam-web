@@ -53,8 +53,18 @@ The web container connects to the worker via `host.docker.internal:8080`.
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
 - [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) cloned next to this repo
 - Python 3.12+ (for the worker)
+- Git
 
-### 1. Configure environment
+### 1. Clone & switch branch
+
+```powershell
+git clone https://github.com/okixk/sentinelCam-web.git
+cd sentinelCam-web
+git fetch origin
+git switch --track origin/copilot/add-docker-support
+```
+
+### 2. Configure environment
 
 Create a `.env` file in the project root:
 
@@ -68,7 +78,7 @@ WEBAUTHN_RP_ID=localhost
 > **Note:** `WORKER_TOKEN` must match the token used by the worker (`WEB_AUTH_TOKEN`).  
 > `ADMIN_PASSWORD` must be at least 12 characters.
 
-### 2. Start the worker
+### 3. Start the worker
 
 Open a PowerShell terminal:
 
@@ -84,7 +94,7 @@ Wait until you see:
 INFO: Stream (MJPEG fallback): http://localhost:8080/stream.mjpg
 ```
 
-### 3. Start the web app
+### 4. Start the web app
 
 Open a second PowerShell terminal:
 
@@ -99,7 +109,7 @@ Check that the container is healthy:
 docker compose ps
 ```
 
-### 4. Open
+### 5. Open
 
 Go to **http://localhost:3000** and log in with the credentials from `.env`.
 
