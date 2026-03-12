@@ -23,20 +23,15 @@ async def gallery_detail_page(
     user: User = Depends(get_current_user),
 ):
     async with get_db() as conn:
-        if user.role == "admin":
-            cursor = await conn.execute(
-                "SELECT r.*, u.username FROM recordings r JOIN users u ON r.user_id = u.id WHERE r.id = ?",
-                (recording_id,),
-            )
-        else:
-            cursor = await conn.execute(
-                "SELECT r.*, u.username FROM recordings r JOIN users u ON r.user_id = u.id "
-                "WHERE r.id = ? AND r.user_id = ?",
-                (recording_id, user.id),
-            )
+        cursor = await conn.execute(
+            "SELECT r.*, u.username FROM recordings r JOIN users u ON r.user_id = u.id WHERE r.id = ?",
+            (recording_id,),
+        )
         row = await cursor.fetchone()
 
     if not row:
+        raise HTTPException(404, "Recording not found")
+    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
         raise HTTPException(404, "Recording not found")
 
     return templates.TemplateResponse(

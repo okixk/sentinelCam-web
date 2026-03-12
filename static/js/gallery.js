@@ -47,7 +47,9 @@ function renderCard(item) {
 
   const typeEl = document.createElement('div');
   typeEl.className = 'gallery-type';
-  typeEl.textContent = (isImage ? '📷 Image' : '🎥 Video') + ' · ' + formatSize(item.size_bytes);
+  let label = (isImage ? '📷 Image' : '🎥 Video') + ' · ' + formatSize(item.size_bytes);
+  if (item.shared) label += ' · 🔓';
+  typeEl.textContent = label;
   info.appendChild(typeEl);
 
   const dateEl = document.createElement('div');

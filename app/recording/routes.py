@@ -51,6 +51,9 @@ def _get_recordings_dir(user_id: int) -> Path:
     p = Path(settings.recordings_path) / str(user_id)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+@router.post("/upload")
 async def upload_recording(
     request: Request,
     type: str = Form(...),
@@ -158,7 +161,7 @@ async def list_recordings(
     params: list = []
 
     if user.role != "admin":
-        conditions.append("r.user_id = ?")
+        conditions.append("(r.user_id = ? OR r.shared = 1)")
         params.append(user.id)
 
     if type in ("image", "video"):
@@ -179,7 +182,7 @@ async def list_recordings(
 
         cursor = await conn.execute(
             f"SELECT r.id, r.type, r.filename, r.overlay_filename, r.raw_filename, "
-            f"r.size_bytes, r.duration_seconds, r.created_at, u.username "
+            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, u.username "
             f"FROM recordings r JOIN users u ON r.user_id = u.id {where} "
             f"ORDER BY r.created_at {order} LIMIT ? OFFSET ?",
             params,
@@ -198,19 +201,14 @@ async def list_recordings(
 @router.get("/{recording_id}")
 async def get_recording(recording_id: int, user: User = Depends(get_current_user)):
     async with get_db() as conn:
-        if user.role == "admin":
-            cursor = await conn.execute(
-                "SELECT r.*, u.username FROM recordings r JOIN users u ON r.user_id = u.id WHERE r.id = ?",
-                (recording_id,),
-            )
-        else:
-            cursor = await conn.execute(
-                "SELECT r.*, u.username FROM recordings r JOIN users u ON r.user_id = u.id "
-                "WHERE r.id = ? AND r.user_id = ?",
-                (recording_id, user.id),
-            )
+        cursor = await conn.execute(
+            "SELECT r.*, u.username FROM recordings r JOIN users u ON r.user_id = u.id WHERE r.id = ?",
+            (recording_id,),
+        )
         row = await cursor.fetchone()
     if not row:
+        raise HTTPException(404, "Recording not found")
+    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
         raise HTTPException(404, "Recording not found")
     return JSONResponse(dict(row))
 
@@ -222,20 +220,15 @@ async def serve_recording_file(
     user: User = Depends(get_current_user),
 ):
     async with get_db() as conn:
-        if user.role == "admin":
-            cursor = await conn.execute(
-                "SELECT r.user_id, r.filename, r.overlay_filename, r.raw_filename, r.type "
-                "FROM recordings r WHERE r.id = ?",
-                (recording_id,),
-            )
-        else:
-            cursor = await conn.execute(
-                "SELECT r.user_id, r.filename, r.overlay_filename, r.raw_filename, r.type "
-                "FROM recordings r WHERE r.id = ? AND r.user_id = ?",
-                (recording_id, user.id),
-            )
+        cursor = await conn.execute(
+            "SELECT r.user_id, r.filename, r.overlay_filename, r.raw_filename, r.type, r.shared "
+            "FROM recordings r WHERE r.id = ?",
+            (recording_id,),
+        )
         row = await cursor.fetchone()
     if not row:
+        raise HTTPException(404, "Recording not found")
+    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
         raise HTTPException(404, "Recording not found")
 
     if variant == "raw" and row["raw_filename"]:
@@ -261,19 +254,14 @@ async def serve_recording_file(
 @router.get("/{recording_id}/thumbnail")
 async def serve_thumbnail(recording_id: int, user: User = Depends(get_current_user)):
     async with get_db() as conn:
-        if user.role == "admin":
-            cursor = await conn.execute(
-                "SELECT r.user_id, r.filename, r.overlay_filename, r.type FROM recordings r WHERE r.id = ?",
-                (recording_id,),
-            )
-        else:
-            cursor = await conn.execute(
-                "SELECT r.user_id, r.filename, r.overlay_filename, r.type FROM recordings r "
-                "WHERE r.id = ? AND r.user_id = ?",
-                (recording_id, user.id),
-            )
+        cursor = await conn.execute(
+            "SELECT r.user_id, r.filename, r.overlay_filename, r.type, r.shared FROM recordings r WHERE r.id = ?",
+            (recording_id,),
+        )
         row = await cursor.fetchone()
     if not row:
+        raise HTTPException(404, "Recording not found")
+    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
         raise HTTPException(404, "Recording not found")
 
     fname = row["overlay_filename"] or row["filename"]
@@ -331,3 +319,29 @@ async def delete_recording(
 
     _audit("recording.delete", username=user.username, id=recording_id)
     return JSONResponse({"ok": True})
+
+
+@router.patch("/{recording_id}/share")
+async def toggle_share(
+    recording_id: int,
+    request: Request,
+    user: User = Depends(get_current_user),
+    _csrf=Depends(check_csrf),
+):
+    body = await request.json()
+    shared = 1 if body.get("shared") else 0
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            "SELECT user_id FROM recordings WHERE id = ?", (recording_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(404, "Recording not found")
+        if row["user_id"] != user.id:
+            raise HTTPException(403, "Only the owner can share recordings")
+        await conn.execute(
+            "UPDATE recordings SET shared = ? WHERE id = ?", (shared, recording_id)
+        )
+        await conn.commit()
+    _audit("recording.share", username=user.username, id=recording_id, shared=shared)
+    return JSONResponse({"ok": True, "shared": shared})

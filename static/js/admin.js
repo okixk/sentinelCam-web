@@ -222,11 +222,123 @@ function loadSystemInfo() {
     </table>`;
 }
 
+// ===== Passkeys =====
+async function loadPasskeys() {
+  const el = document.getElementById('passkeys-list');
+  if (!el) return;
+  try {
+    const resp = await fetch('/auth/webauthn/credentials', { cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const keys = await resp.json();
+    if (!keys.length) { el.innerHTML = '<p style="color:var(--muted)">No passkeys registered yet.</p>'; return; }
+    let html = '<table class="admin-table"><thead><tr><th>Name</th><th>Sign Count</th><th>Registered</th><th>Action</th></tr></thead><tbody>';
+    for (const k of keys) {
+      html += `<tr>
+        <td>${escHtml(k.name)}</td>
+        <td>${k.sign_count}</td>
+        <td>${formatDate(k.created_at)}</td>
+        <td><button data-action="delete-passkey" data-cred-id="${k.id}" data-name="${escHtml(k.name)}" class="danger" style="padding:4px 8px;font-size:0.8rem;">Delete</button></td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = '<span style="color:var(--danger)">Failed: ' + err.message + '</span>';
+  }
+}
+
+async function registerPasskey() {
+  const btn = document.getElementById('register-passkey-btn');
+  if (btn) btn.disabled = true;
+  try {
+    // 1. Get registration options from server
+    const beginResp = await fetch('/auth/webauthn/register/begin', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': getCsrf() }
+    });
+    if (!beginResp.ok) throw new Error('Failed to start registration');
+    const options = await beginResp.json();
+
+    // 2. Decode challenge and user.id from base64url
+    options.challenge = base64urlToBuffer(options.challenge);
+    options.user.id = base64urlToBuffer(options.user.id);
+    if (options.excludeCredentials) {
+      options.excludeCredentials = options.excludeCredentials.map(c => ({
+        ...c, id: base64urlToBuffer(c.id)
+      }));
+    }
+
+    // 3. Prompt browser credential creation
+    const credential = await navigator.credentials.create({ publicKey: options });
+
+    // 4. Encode response for server
+    const attestation = {
+      id: credential.id,
+      rawId: bufferToBase64url(credential.rawId),
+      type: credential.type,
+      response: {
+        attestationObject: bufferToBase64url(credential.response.attestationObject),
+        clientDataJSON: bufferToBase64url(credential.response.clientDataJSON)
+      }
+    };
+
+    const name = prompt('Name for this passkey:', 'My Passkey');
+    if (name) attestation.name = name;
+
+    // 5. Complete registration
+    const completeResp = await fetch('/auth/webauthn/register/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrf() },
+      body: JSON.stringify(attestation)
+    });
+    if (!completeResp.ok) {
+      const err = await completeResp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Registration failed');
+    }
+    await loadPasskeys();
+  } catch (err) {
+    if (err.name !== 'AbortError') alert('Passkey registration failed: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deletePasskey(credId, name) {
+  if (!confirm(`Delete passkey "${name}"?`)) return;
+  try {
+    const resp = await fetch('/auth/webauthn/credentials/' + credId, {
+      method: 'DELETE',
+      headers: { 'X-CSRF-Token': getCsrf() }
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    await loadPasskeys();
+  } catch (err) {
+    alert('Delete failed: ' + err.message);
+  }
+}
+
+function base64urlToBuffer(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  const bin = atob(b64 + pad);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr.buffer;
+}
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let str = '';
+  for (const b of bytes) str += String.fromCharCode(b);
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 // ===== Init =====
 loadWorkerStatus();
 loadUsers();
 loadSessions();
 loadSystemInfo();
+loadPasskeys();
 
 // ===== Event delegation =====
 document.addEventListener('click', event => {
@@ -238,9 +350,13 @@ document.addEventListener('click', event => {
   else if (action === 'reset-pw') resetPassword(parseInt(btn.dataset.userId), btn.dataset.username);
   else if (action === 'delete-user') deleteUser(parseInt(btn.dataset.userId), btn.dataset.username);
   else if (action === 'revoke-session') revokeSession(btn.dataset.sessionId);
+  else if (action === 'delete-passkey') deletePasskey(parseInt(btn.dataset.credId), btn.dataset.name);
 });
 
 document.getElementById('create-user-form').addEventListener('submit', createUser);
+
+const regBtn = document.getElementById('register-passkey-btn');
+if (regBtn) regBtn.addEventListener('click', registerPasskey);
 
 // Poll worker status every 2 seconds
 setInterval(loadWorkerStatus, 2000);

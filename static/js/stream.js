@@ -648,28 +648,38 @@ async function sendCmd(cmd, busyText = "") {
 // ===== Capture Frame =====
 async function captureFrame() {
   const mediaEl = videoEl.classList.contains("show") ? videoEl : fallbackEl;
-  let blob;
+  let overlayBlob;
   try {
     if (mediaEl === videoEl && videoEl.srcObject) {
       const canvas = document.createElement("canvas");
       canvas.width = videoEl.videoWidth || 640;
       canvas.height = videoEl.videoHeight || 480;
       canvas.getContext("2d").drawImage(videoEl, 0, 0);
-      blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.92));
-    } else {
-      // Fetch raw frame from proxy endpoint
-      const resp = await fetch("/api/proxy/frame-raw.jpg", { cache: "no-store" });
-      if (!resp.ok) throw new Error("Frame fetch failed: " + resp.status);
-      blob = await resp.blob();
+      overlayBlob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.92));
+    } else if (fallbackEl && fallbackEl.naturalWidth) {
+      const canvas = document.createElement("canvas");
+      canvas.width = fallbackEl.naturalWidth;
+      canvas.height = fallbackEl.naturalHeight;
+      canvas.getContext("2d").drawImage(fallbackEl, 0, 0);
+      overlayBlob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.92));
     }
   } catch (e) {
     setStatus("Capture failed: " + e.message, true); return;
   }
-  if (!blob || blob.size === 0) { setStatus("Capture failed: empty frame", true); return; }
+  if (!overlayBlob || overlayBlob.size === 0) { setStatus("Capture failed: empty frame", true); return; }
+
+  // Fetch raw frame (without KI overlay) for toggle support
+  let rawBlob = null;
+  try {
+    const rawResp = await fetch("/api/proxy/frame-raw.jpg", { cache: "no-store" });
+    if (rawResp.ok) rawBlob = await rawResp.blob();
+  } catch (_) { /* raw frame optional */ }
+
   const csrf = getCsrf();
   const fd = new FormData();
   fd.append("type", "image");
-  fd.append("overlay_file", blob, "capture.jpg");
+  fd.append("overlay_file", overlayBlob, "capture.jpg");
+  if (rawBlob && rawBlob.size > 0) fd.append("raw_file", rawBlob, "capture_raw.jpg");
   captureBtn.disabled = true;
   try {
     const resp = await fetch("/api/recordings/upload", { method: "POST", headers: { "X-CSRF-Token": csrf }, body: fd });
@@ -827,4 +837,108 @@ document.addEventListener("click", event => {
   else if (action === "record") toggleRecord();
   else if (action === "cmd") sendCmd(btn.dataset.cmd, btn.dataset.busy || undefined);
   else if (action === "connect") connect().catch(error => setStatus(formatError(error), true));
+  else if (action === "delete-passkey") deletePasskey(parseInt(btn.dataset.credId), btn.dataset.name);
 });
+
+// ===== Passkey Management =====
+function base64urlToBuffer(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  const bin = atob(b64 + pad);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr.buffer;
+}
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let str = '';
+  for (const b of bytes) str += String.fromCharCode(b);
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function loadPasskeys() {
+  const el = document.getElementById('passkeys-list');
+  if (!el) return;
+  try {
+    const resp = await fetch('/auth/webauthn/credentials', { cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const keys = await resp.json();
+    if (!keys.length) { el.innerHTML = '<span style="color:var(--muted)">No passkeys registered.</span>'; return; }
+    let html = '';
+    for (const k of keys) {
+      const name = String(k.name || 'Passkey').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);">
+        <span>${name}</span>
+        <button data-action="delete-passkey" data-cred-id="${k.id}" data-name="${name}" class="danger" style="padding:2px 8px;font-size:0.8rem;">✕</button>
+      </div>`;
+    }
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = '<span style="color:var(--danger)">Failed: ' + err.message + '</span>';
+  }
+}
+
+async function registerPasskey() {
+  const btn = document.getElementById('register-passkey-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const beginResp = await fetch('/auth/webauthn/register/begin', {
+      method: 'POST', headers: { 'X-CSRF-Token': getCsrf() }
+    });
+    if (!beginResp.ok) throw new Error('Failed to start registration');
+    const options = await beginResp.json();
+
+    options.challenge = base64urlToBuffer(options.challenge);
+    options.user.id = base64urlToBuffer(options.user.id);
+    if (options.excludeCredentials) {
+      options.excludeCredentials = options.excludeCredentials.map(c => ({ ...c, id: base64urlToBuffer(c.id) }));
+    }
+
+    const credential = await navigator.credentials.create({ publicKey: options });
+    const attestation = {
+      id: credential.id,
+      rawId: bufferToBase64url(credential.rawId),
+      type: credential.type,
+      response: {
+        attestationObject: bufferToBase64url(credential.response.attestationObject),
+        clientDataJSON: bufferToBase64url(credential.response.clientDataJSON)
+      }
+    };
+    const name = prompt('Name for this passkey:', 'My Passkey');
+    if (name) attestation.name = name;
+
+    const completeResp = await fetch('/auth/webauthn/register/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrf() },
+      body: JSON.stringify(attestation)
+    });
+    if (!completeResp.ok) {
+      const err = await completeResp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Registration failed');
+    }
+    setStatus("Passkey registered successfully!");
+    await loadPasskeys();
+  } catch (err) {
+    if (err.name !== 'AbortError') setStatus('Passkey error: ' + err.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deletePasskey(credId, name) {
+  if (!confirm('Delete passkey "' + name + '"?')) return;
+  try {
+    const resp = await fetch('/auth/webauthn/credentials/' + credId, {
+      method: 'DELETE', headers: { 'X-CSRF-Token': getCsrf() }
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    await loadPasskeys();
+  } catch (err) {
+    setStatus('Delete failed: ' + err.message, true);
+  }
+}
+
+loadPasskeys();
+const _regBtn = document.getElementById('register-passkey-btn');
+if (_regBtn) _regBtn.addEventListener('click', registerPasskey);

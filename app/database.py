@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS recordings (
     raw_filename TEXT,
     size_bytes INTEGER NOT NULL DEFAULT 0,
     duration_seconds REAL,
+    shared INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL DEFAULT (unixepoch('subsec')),
     metadata TEXT
 );
@@ -83,6 +84,11 @@ async def init_db() -> None:
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
         await conn.executescript(SCHEMA)
+        # Migration: add shared column if missing
+        cursor = await conn.execute("PRAGMA table_info(recordings)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        if "shared" not in columns:
+            await conn.execute("ALTER TABLE recordings ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
         await conn.commit()
         log.info("Database schema initialized at %s", db_path)
 

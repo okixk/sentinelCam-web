@@ -194,7 +194,8 @@ async def webauthn_register_begin(
         rows = await cursor.fetchall()
         existing = [bytes(r["credential_id"]) for r in rows]
 
-    options = generate_registration_options(user.id, user.username, existing)
+    rp_id = request.url.hostname or settings.webauthn_rp_id
+    options = generate_registration_options(user.id, user.username, existing, rp_id=rp_id)
     challenge_b64 = options.get("challenge", "")
     from webauthn.helpers import base64url_to_bytes
     challenge_bytes = base64url_to_bytes(challenge_b64) if isinstance(challenge_b64, str) else challenge_b64
@@ -217,11 +218,12 @@ async def webauthn_register_complete(
         raise HTTPException(400, "No pending registration challenge")
 
     origin = f"{request.url.scheme}://{request.url.netloc}"
+    rp_id = request.url.hostname or settings.webauthn_rp_id
     try:
         result = verify_registration_response(
             challenge=challenge,
             response_data=body,
-            rp_id=settings.webauthn_rp_id,
+            rp_id=rp_id,
             origin=origin,
         )
     except Exception as e:
@@ -262,7 +264,8 @@ async def webauthn_login_begin(request: Request):
         raise HTTPException(404, "No passkeys registered for this user")
 
     credentials = [{"credential_id": bytes(r["credential_id"])} for r in rows]
-    options = generate_authentication_options(credentials)
+    rp_id = request.url.hostname or settings.webauthn_rp_id
+    options = generate_authentication_options(credentials, rp_id=rp_id)
 
     from webauthn.helpers import base64url_to_bytes
     challenge_b64 = options.get("challenge", "")
@@ -298,6 +301,7 @@ async def webauthn_login_complete(request: Request):
     origin = f"{request.url.scheme}://{request.url.netloc}"
     matched_row = None
     new_sign_count = 0
+    rp_id = request.url.hostname or settings.webauthn_rp_id
     for row in rows:
         try:
             new_sign_count = verify_authentication_response(
@@ -305,7 +309,7 @@ async def webauthn_login_complete(request: Request):
                 response_data=credential_response,
                 credential_public_key=bytes(row["public_key"]),
                 sign_count=row["sign_count"],
-                rp_id=settings.webauthn_rp_id,
+                rp_id=rp_id,
                 origin=origin,
             )
             matched_row = row
@@ -348,3 +352,32 @@ async def webauthn_login_complete(request: Request):
     response = JSONResponse({"ok": True, "redirect": "/"})
     _set_session_cookies(response, session_id, csrf_token)
     return response
+
+
+@router.get("/webauthn/credentials")
+async def list_my_passkeys(user: User = Depends(get_current_user)):
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            "SELECT id, name, created_at, sign_count FROM webauthn_credentials WHERE user_id = ?",
+            (user.id,),
+        )
+        rows = await cursor.fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@router.delete("/webauthn/credentials/{cred_id}")
+async def delete_passkey(
+    cred_id: int,
+    user: User = Depends(get_current_user),
+    _csrf=Depends(check_csrf),
+):
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?",
+            (cred_id, user.id),
+        )
+        await conn.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Credential not found")
+    _audit("auth.webauthn.delete", username=user.username, credential_id=cred_id)
+    return JSONResponse({"ok": True})

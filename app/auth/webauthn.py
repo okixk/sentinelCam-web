@@ -39,9 +39,9 @@ def get_rp_id(request_host: str) -> str:
     return host
 
 
-def generate_registration_options(user_id: int, username: str, existing_credentials: list[bytes]) -> dict:
+def generate_registration_options(user_id: int, username: str, existing_credentials: list[bytes], rp_id: str | None = None) -> dict:
     options = webauthn.generate_registration_options(
-        rp_id=settings.webauthn_rp_id,
+        rp_id=rp_id or settings.webauthn_rp_id,
         rp_name=settings.webauthn_rp_name,
         user_id=str(user_id).encode(),
         user_name=username,
@@ -72,9 +72,9 @@ def verify_registration_response(challenge: bytes, response_data: dict, rp_id: s
     }
 
 
-def generate_authentication_options(credentials: list[dict]) -> dict:
+def generate_authentication_options(credentials: list[dict], rp_id: str | None = None) -> dict:
     options = webauthn.generate_authentication_options(
-        rp_id=settings.webauthn_rp_id,
+        rp_id=rp_id or settings.webauthn_rp_id,
         user_verification=UserVerificationRequirement.PREFERRED,
         allow_credentials=[
             PublicKeyCredentialDescriptor(id=bytes(c["credential_id"]))
