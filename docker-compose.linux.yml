@@ -13,10 +13,14 @@ services:
       - "8080:8080"
       - "50000-51000:50000-51000/udp"
     environment:
-      WEB_AUTH_TOKEN: ${WORKER_TOKEN}
+      WEB_AUTH_TOKEN: ${WORKER_TOKEN:-}
       WEB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://web:3000
-    devices:
-      - "${WORKER_VIDEO_DEVICE:-/dev/video0}:${WORKER_VIDEO_DEVICE:-/dev/video0}"
+    # Webcam passthrough (Linux only). Uncomment and adjust the device path
+    # if you want to use a local camera. Not needed for remote stream sources.
+    # devices:
+    #   - "/dev/video0:/dev/video0"
+    group_add:
+      - video
     command:
       - "--host"
       - "0.0.0.0"
@@ -33,3 +37,4 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 30s

@@ -171,11 +171,24 @@ The Linux override starts:
 - `web` on `localhost:3000`
 - `worker` on `localhost:8080`
 
-Optional overrides:
+#### With webcam passthrough
+
+Webcam passthrough requires an extra compose override because Docker needs direct access to the camera device:
 
 ```bash
-WORKER_VIDEO_DEVICE=/dev/video2 docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
-WORKER_SOURCE=rtsp://HOST:PORT/stream.mjpg docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-cam.yml up -d --build
+```
+
+To use a different camera device:
+
+```bash
+WORKER_VIDEO_DEVICE=/dev/video2 docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-cam.yml up -d --build
+```
+
+#### With a remote stream (no webcam needed)
+
+```bash
+WORKER_SOURCE=rtsp://HOST:PORT/stream docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
 ```
 
 ### 4. Verify
@@ -200,7 +213,7 @@ docker compose -f docker-compose.yml -f docker-compose.linux.yml down
 
 Docker on Windows cannot access the host webcam. The worker needs direct camera access, so it runs outside Docker. The web container connects to the local worker via `host.docker.internal`.
 
-On Linux, Docker can pass through `/dev/video*`, so the provided Linux compose override can run the worker in Docker as well.
+On Linux, Docker can pass through `/dev/video*` via the optional [`docker-compose.linux-cam.yml`](./docker-compose.linux-cam.yml) override. Without webcam passthrough, you can still use remote streams via `WORKER_SOURCE`.
 
 ## User roles & permissions
 
@@ -244,7 +257,9 @@ templates/              # Jinja2 HTML templates
   admin.html            #   Admin dashboard
   gallery.html          #   Gallery grid
   gallery_detail.html   #   Recording detail with overlay toggle & sharing
-docker-compose.yml      # Docker Compose (web service only)
+docker-compose.yml           # Docker Compose (web service only)
+docker-compose.linux.yml     # Linux override (adds worker service)
+docker-compose.linux-cam.yml # Linux webcam passthrough override
 Dockerfile              # Python 3.13-slim container
 run_web.py              # Uvicorn launcher
 web_server.py           # Standalone Python proxy (non-Docker alternative)
