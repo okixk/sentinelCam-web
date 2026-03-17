@@ -1,6 +1,6 @@
 # Webcam passthrough override for the optional Linux worker container.
-# Use together with the base, linux, and linux-worker compose files:
-#   docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
+# Use together with the base and linux-worker compose files:
+#   docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
 #
 # Set WORKER_VIDEO_DEVICE to the camera device path (default: /dev/video0).
 

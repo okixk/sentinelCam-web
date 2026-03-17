@@ -44,6 +44,17 @@ def _worker_headers() -> dict[str, str]:
     return headers
 
 
+def _proxy_error_response(path: str, error: Exception, *, detail: str = "proxy request failed") -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": f"{detail}: {error}",
+            "upstream": _worker_url(path),
+        },
+        status_code=502,
+    )
+
+
 async def _probe_worker_capabilities() -> dict:
     global _capability_cache
     now = time.time()
@@ -122,7 +133,7 @@ async def proxy_state(user: User = Depends(get_current_user)):
                 media_type="application/json",
             )
     except httpx.RequestError as e:
-        return JSONResponse({"ok": False, "error": f"proxy request failed: {e}"}, status_code=502)
+        return _proxy_error_response("/api/state", e)
 
 
 @router.post("/api/cmd")
@@ -143,7 +154,7 @@ async def proxy_cmd(request: Request, user: User = Depends(get_current_user), _c
                 headers=_filter_headers(resp.headers),
             )
     except httpx.RequestError as e:
-        return JSONResponse({"ok": False, "error": f"proxy request failed: {e}"}, status_code=502)
+        return _proxy_error_response("/api/cmd", e)
 
 
 @router.get("/stream.mjpg")
@@ -176,7 +187,7 @@ async def proxy_webrtc_offer_post(request: Request, user: User = Depends(get_cur
                 headers=_filter_headers(resp.headers),
             )
     except httpx.RequestError as e:
-        return JSONResponse({"ok": False, "error": f"proxy request failed: {e}"}, status_code=502)
+        return _proxy_error_response("/api/webrtc/offer", e)
 
 
 @router.get("/api/webrtc/offer")
@@ -190,7 +201,7 @@ async def proxy_webrtc_offer_get(user: User = Depends(get_current_user)):
                 headers=_filter_headers(resp.headers),
             )
     except httpx.RequestError as e:
-        return JSONResponse({"ok": False, "error": f"proxy request failed: {e}"}, status_code=502)
+        return _proxy_error_response("/api/webrtc/offer", e)
 
 
 @router.get("/health")
@@ -204,7 +215,7 @@ async def health():
                 headers=_filter_headers(resp.headers),
             )
     except httpx.RequestError as e:
-        return JSONResponse({"ok": False, "error": f"worker unreachable: {e}"}, status_code=502)
+        return _proxy_error_response("/health", e, detail="worker unreachable")
 
 
 @router.get("/api/proxy/frame-raw.jpg")
@@ -219,4 +230,4 @@ async def proxy_frame_raw(user: User = Depends(get_current_user)):
                 media_type=resp.headers.get("content-type", "image/jpeg"),
             )
     except httpx.RequestError as e:
-        return JSONResponse({"ok": False, "error": f"proxy request failed: {e}"}, status_code=502)
+        return _proxy_error_response("/frame-raw.jpg", e)

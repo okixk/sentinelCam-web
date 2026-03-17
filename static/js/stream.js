@@ -95,37 +95,49 @@ function normalizeBaseUrl(url) {
   return url.href.replace(/\/+$/, "");
 }
 
-function extractServerError(text) {
+function extractServerErrorDetails(text) {
   const trimmed = (text || "").trim();
-  if (!trimmed) return "";
+  const details = { message: "", upstream: "" };
+  if (!trimmed) return details;
   try {
     const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
-      return parsed.error.trim();
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.error === "string" && parsed.error.trim()) {
+        details.message = parsed.error.trim();
+      }
+      if (typeof parsed.upstream === "string" && parsed.upstream.trim()) {
+        details.upstream = parsed.upstream.trim();
+      }
+      if (details.message || details.upstream) {
+        return details;
+      }
     }
   } catch (e) { /* fall through */ }
-  return trimmed.replace(/\s+/g, " ");
+  details.message = trimmed.replace(/\s+/g, " ");
+  return details;
 }
 
 function describeWorkerHttpError(status, serverError, url, target) {
+  const serverMessage = serverError.message || "";
+  const workerUrl = serverError.upstream || url;
   if (status === 401) {
-    return "Worker auth is enabled at " + url + ". Use proxy mode instead.";
+    return "Worker auth is enabled at " + workerUrl + ". Use proxy mode instead.";
   }
   if (status === 404 && /\/api\/webrtc\/offer(?:\?|$)/i.test(url)) {
-    return "Worker does not expose WebRTC at " + url + ". Start worker with WebRTC enabled or use MJPEG.";
+    return "Worker does not expose WebRTC at " + workerUrl + ". Start worker with WebRTC enabled or use MJPEG.";
   }
-  if (status === 403 && /origin not allowed/i.test(serverError)) {
+  if (status === 403 && /origin not allowed/i.test(serverMessage)) {
     return target.kind === "proxy"
-      ? "Worker rejected proxy origin for " + url + ". Check WEB_ALLOWED_ORIGINS on the worker."
+      ? "Worker rejected proxy origin for " + workerUrl + ". Check WEB_ALLOWED_ORIGINS on the worker."
       : "Worker rejected browser origin. Use proxy mode or add origin to WEB_ALLOWED_ORIGINS.";
   }
   if (status === 403) {
-    return "Worker rejected " + url + (serverError ? ": " + serverError : ".");
+    return "Worker rejected " + workerUrl + (serverMessage ? ": " + serverMessage : ".");
   }
   if (target.kind === "proxy" && status === 502) {
-    return "Proxy could not reach worker at " + url + ". Start the worker. On Linux, use docker-compose.linux.yml so the proxy can reach 127.0.0.1.";
+    return "Proxy could not reach worker at " + workerUrl + ". Start the worker. If the web app runs in Docker, use WORKER_BASE_URL=http://host.docker.internal:8080. On Linux, the worker must listen on 0.0.0.0 or another non-loopback interface.";
   }
-  return "HTTP " + status + " from " + url + (serverError ? ": " + serverError : "");
+  return "HTTP " + status + " from " + workerUrl + (serverMessage ? ": " + serverMessage : "");
 }
 
 function describeWorkerNetworkError(error, url, target) {
@@ -188,11 +200,12 @@ async function workerFetch(path, init = {}, options = {}) {
   }
   const bodyText = await response.text();
   if (!response.ok) {
-    const serverError = extractServerError(bodyText);
+    const serverError = extractServerErrorDetails(bodyText);
     throw createError(describeWorkerHttpError(response.status, serverError, url, target), {
       url, status: response.status, target, bodyText, serverError,
+      upstreamUrl: serverError.upstream || "",
       isAuthError: response.status === 401 || response.status === 403,
-      isOriginError: response.status === 403 && /origin not allowed/i.test(serverError)
+      isOriginError: response.status === 403 && /origin not allowed/i.test(serverError.message || "")
     });
   }
   if (options.expect === "json") {

@@ -1,9 +1,9 @@
 # Optional Linux worker container.
-# Use together with the base and linux compose files:
-#   docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-worker.yml up -d --build
+# Use together with the base compose file:
+#   docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml up -d --build
 #
-# The web service stays on the host network, so it can always reach the worker at
-# http://127.0.0.1:8080 whether the worker runs locally or in this container.
+# The worker runs on the host network and listens on 0.0.0.0 by default,
+# so the web container can reach it at http://host.docker.internal:8080.
 
 services:
   web:
@@ -20,7 +20,7 @@ services:
       WEB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
     command:
       - "--host"
-      - "127.0.0.1"
+      - "${WORKER_BIND_HOST:-0.0.0.0}"
       - "--port"
       - "8080"
       - "--source"

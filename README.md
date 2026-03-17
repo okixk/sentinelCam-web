@@ -46,10 +46,11 @@ camera → sentinelCam-worker (local or Docker, port 8080) → sentinelCam-web (
 On **Windows/macOS**, the worker usually runs **locally** (needs webcam access) while the web app runs in **Docker**.  
 The web container connects to the worker via `host.docker.internal:8080`.
 
-On **Linux**, the web app uses [`docker-compose.linux.yml`](./docker-compose.linux.yml), which switches the container to the **host network**. That lets the proxy reach a worker on `127.0.0.1:8080`, which is the common Linux case when the worker is started locally.
+On **Linux**, the same default Compose file works too. Start the worker with `--host 0.0.0.0` (or another non-loopback host address) so the Dockerized web app can still reach it via `host.docker.internal:8080`.
 
 If you also want the worker in Docker on Linux, add [`docker-compose.linux-worker.yml`](./docker-compose.linux-worker.yml).  
-For webcam passthrough, add [`docker-compose.linux-cam.yml`](./docker-compose.linux-cam.yml) on top.
+For webcam passthrough, add [`docker-compose.linux-cam.yml`](./docker-compose.linux-cam.yml) on top.  
+[`docker-compose.linux.yml`](./docker-compose.linux.yml) remains available as a legacy fallback if your worker must stay bound to `127.0.0.1`.
 
 ## Quick start (Windows)
 
@@ -172,7 +173,7 @@ Open a terminal in the worker repo:
 cd ../sentinelCam-worker
 export WEB_AUTH_TOKEN="<same WORKER_TOKEN as in .env>"
 export WEB_ALLOWED_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
-./run.sh --no-window --stream auto
+./run.sh --host 0.0.0.0 --no-window --stream auto
 ```
 
 Wait until you see:
@@ -183,45 +184,45 @@ INFO: Stream (MJPEG fallback): http://localhost:8080/stream.mjpg
 ### 4. Start the web app
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+docker compose up -d --build
 ```
 
-The Linux override starts the web app on the **host network**, so the proxy can reach the local worker on `127.0.0.1:8080`.
+The default Compose file points the web app at `http://host.docker.internal:8080`. On Linux, that works as long as the worker listens on `0.0.0.0` or another non-loopback host address.
 
 #### Optional: run the worker in Docker instead
 
 Add the worker override:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-worker.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml up -d --build
 ```
 
-This keeps both services on the host network and still uses `http://127.0.0.1:8080` between web and worker.
+The worker container uses the host network and listens on `0.0.0.0`, so the web container can still reach it through `host.docker.internal:8080`.
 
 #### With webcam passthrough
 
 Webcam passthrough requires an extra compose override because Docker needs direct access to the camera device:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
 ```
 
 To use a different camera device:
 
 ```bash
-WORKER_VIDEO_DEVICE=/dev/video2 docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
+WORKER_VIDEO_DEVICE=/dev/video2 docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
 ```
 
 #### With a remote stream (no webcam needed)
 
 ```bash
-WORKER_SOURCE=rtsp://HOST:PORT/stream docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-worker.yml up -d --build
+WORKER_SOURCE=rtsp://HOST:PORT/stream docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml up -d --build
 ```
 
 ### 5. Verify
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.linux.yml ps
+docker compose ps
 curl http://127.0.0.1:3000/healthz
 curl http://127.0.0.1:8080/health
 ```
@@ -235,7 +236,7 @@ Go to **http://localhost:3000** and log in with the credentials from `.env`.
 ### Stopping
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.linux.yml down
+docker compose down
 ```
 
 If you started the worker in Docker as well, include `-f docker-compose.linux-worker.yml` and optionally `-f docker-compose.linux-cam.yml` in the `down` command.
@@ -244,9 +245,9 @@ If you started the worker in Docker as well, include `-f docker-compose.linux-wo
 
 Docker on Windows cannot access the host webcam. The worker needs direct camera access, so it runs outside Docker. The web container connects to the local worker via `host.docker.internal`.
 
-On Linux, bridge-network containers cannot reliably reach a worker that only listens on the host's `127.0.0.1`. The Linux override therefore uses the host network for the web app, so proxy requests to `http://127.0.0.1:8080` work out of the box.
+On Linux, bridge-network containers can also use `host.docker.internal`, but the worker must listen on `0.0.0.0` or another non-loopback host address. A worker that only binds to `127.0.0.1` is intentionally not reachable from the Docker bridge network.
 
-If you want the worker in Docker on Linux too, add [`docker-compose.linux-worker.yml`](./docker-compose.linux-worker.yml). For webcam access, stack [`docker-compose.linux-cam.yml`](./docker-compose.linux-cam.yml) on top. Without webcam passthrough, you can still use remote streams via `WORKER_SOURCE`.
+If you want the worker in Docker on Linux too, add [`docker-compose.linux-worker.yml`](./docker-compose.linux-worker.yml). For webcam access, stack [`docker-compose.linux-cam.yml`](./docker-compose.linux-cam.yml) on top. Without webcam passthrough, you can still use remote streams via `WORKER_SOURCE`. Keep [`docker-compose.linux.yml`](./docker-compose.linux.yml) only as a legacy fallback for loopback-only workers.
 
 ## User roles & permissions
 
@@ -291,7 +292,7 @@ templates/              # Jinja2 HTML templates
   gallery.html          #   Gallery grid
   gallery_detail.html   #   Recording detail with overlay toggle & sharing
 docker-compose.yml           # Docker Compose (web service only)
-docker-compose.linux.yml     # Linux override (web on host network)
+docker-compose.linux.yml     # Optional legacy Linux override (web on host network)
 docker-compose.linux-worker.yml  # Optional Linux worker container
 docker-compose.linux-cam.yml # Linux webcam passthrough override
 Dockerfile              # Python 3.13-slim container
@@ -303,7 +304,7 @@ web_server.py           # Standalone Python proxy (non-Docker alternative)
 
 | Variable                   | Default        | Description                                |
 |----------------------------|----------------|--------------------------------------------|
-| `WORKER_BASE_URL`          | `http://127.0.0.1:8080` | Worker connection URL              |
+| `WORKER_BASE_URL`          | `http://127.0.0.1:8080` app default, `http://host.docker.internal:8080` in Compose | Worker connection URL |
 | `WORKER_TOKEN`             | *(required)*   | Shared secret for worker authentication    |
 | `WEB_PORT`                 | `3000`         | Port the web server listens on             |
 | `PUBLIC`                   | `0`            | Bind to `0.0.0.0` when `1`                 |
