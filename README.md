@@ -35,7 +35,7 @@ It connects to a running [`sentinelCam-worker`](https://github.com/okixk/sentine
 - **Docker** support (hybrid architecture)
 - SQLite database with automatic migrations
 - Persistent data volume for DB and recordings
-- Health check endpoint (`/health`)
+- Health check endpoints (`/healthz` for the web app, `/health` for the worker proxy)
 
 ## Architecture
 
@@ -45,6 +45,8 @@ camera → sentinelCam-worker (local, port 8080) → sentinelCam-web (Docker, po
 
 The worker runs **locally** (needs webcam access), the web app runs in **Docker**.  
 The web container connects to the worker via `host.docker.internal:8080`.
+
+On **Linux**, you can also run both services in Docker with [`docker-compose.linux.yml`](./docker-compose.linux.yml), which connects the web app to the worker over the internal Compose network (`http://worker:8080`).
 
 ## Quick start (Windows)
 
@@ -128,9 +130,77 @@ docker compose down
 docker compose up -d --build
 ```
 
+## Quick start (Linux)
+
+### Prerequisites
+
+- Docker Engine with the Compose plugin installed
+- [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) cloned next to this repo
+- A Linux webcam device such as `/dev/video0`, or another source URL/path
+- Git
+
+### 1. Clone & switch branch
+
+```bash
+git clone https://github.com/okixk/sentinelCam-web.git
+cd sentinelCam-web
+git fetch origin
+git switch --track origin/copilot/add-docker-support
+```
+
+### 2. Configure environment
+
+Create a `.env` file in the project root:
+
+```dotenv
+WORKER_TOKEN=<random-secret>
+ADMIN_USER=admin
+ADMIN_PASSWORD=<strong-password-min-12-chars>
+WEBAUTHN_RP_ID=localhost
+```
+
+> `WORKER_TOKEN` must match the worker token used inside the Linux stack as well.
+
+### 3. Start the full stack
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+```
+
+The Linux override starts:
+- `web` on `localhost:3000`
+- `worker` on `localhost:8080`
+
+Optional overrides:
+
+```bash
+WORKER_VIDEO_DEVICE=/dev/video2 docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+WORKER_SOURCE=rtsp://HOST:PORT/stream.mjpg docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+```
+
+### 4. Verify
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.linux.yml ps
+curl http://127.0.0.1:3000/healthz
+curl http://127.0.0.1:8080/health
+```
+
+### 5. Open
+
+Go to **http://localhost:3000** and log in with the credentials from `.env`.
+
+### Stopping
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.linux.yml down
+```
+
 ## Why the worker runs locally
 
 Docker on Windows cannot access the host webcam. The worker needs direct camera access, so it runs outside Docker. The web container connects to the local worker via `host.docker.internal`.
+
+On Linux, Docker can pass through `/dev/video*`, so the provided Linux compose override can run the worker in Docker as well.
 
 ## User roles & permissions
 

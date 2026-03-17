@@ -1,0 +1,35 @@
+services:
+  web:
+    environment:
+      WORKER_BASE_URL: ${WORKER_BASE_URL:-http://worker:8080}
+    depends_on:
+      worker:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../sentinelCam-worker
+    ports:
+      - "8080:8080"
+      - "50000-51000:50000-51000/udp"
+    environment:
+      WEB_AUTH_TOKEN: ${WORKER_TOKEN}
+      WEB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://web:3000
+    devices:
+      - "${WORKER_VIDEO_DEVICE:-/dev/video0}:${WORKER_VIDEO_DEVICE:-/dev/video0}"
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--source"
+      - "${WORKER_SOURCE:-0}"
+      - "--no-window"
+      - "--stream"
+      - "auto"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -90,3 +90,8 @@ async def stream_page(request: Request):
 @app.get("/favicon.ico")
 async def favicon():
     return HTMLResponse("", status_code=204)
+
+
+@app.get("/healthz")
+async def app_health():
+    return JSONResponse({"ok": True})
