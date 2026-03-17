@@ -123,7 +123,7 @@ function describeWorkerHttpError(status, serverError, url, target) {
     return "Worker rejected " + url + (serverError ? ": " + serverError : ".");
   }
   if (target.kind === "proxy" && status === 502) {
-    return "Proxy could not reach worker at " + url + ". Start the worker.";
+    return "Proxy could not reach worker at " + url + ". Start the worker. On Linux, use docker-compose.linux.yml so the proxy can reach 127.0.0.1.";
   }
   return "HTTP " + status + " from " + url + (serverError ? ": " + serverError : "");
 }

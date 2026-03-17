@@ -1,0 +1,37 @@
+# Optional Linux worker container.
+# Use together with the base and linux compose files:
+#   docker compose -f docker-compose.yml -f docker-compose.linux.yml -f docker-compose.linux-worker.yml up -d --build
+#
+# The web service stays on the host network, so it can always reach the worker at
+# http://127.0.0.1:8080 whether the worker runs locally or in this container.
+
+services:
+  web:
+    depends_on:
+      worker:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../sentinelCam-worker
+    network_mode: host
+    environment:
+      WEB_AUTH_TOKEN: ${WORKER_TOKEN:-}
+      WEB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    command:
+      - "--host"
+      - "127.0.0.1"
+      - "--port"
+      - "8080"
+      - "--source"
+      - "${WORKER_SOURCE:-0}"
+      - "--no-window"
+      - "--stream"
+      - "auto"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
