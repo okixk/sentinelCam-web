@@ -99,6 +99,7 @@ Notes:
 - set `WORKER_VIDEO_DEVICE` in `.env` if your camera is not `/dev/video0`
 - set `WORKER_SOURCE` in `.env` for RTSP or other non-camera sources
 - use `WORKER_VIDEO_DEVICE=/dev/null` for remote-stream-only hosts
+- tune Docker worker quality from `.env` with `WORKER_STREAM_QUALITY`, `WORKER_WEBRTC_BITRATE`, `WORKER_WEBRTC_FPS`, `WORKER_CAMERA_FPS`, `WORKER_JPEG_QUALITY`, `WORKER_WEBRTC_CODEC`, `WORKER_PERFORMANCE_PROFILE`, and `WORKER_STREAM_MODE`
 
 ### 4. Open the app
 
@@ -212,6 +213,23 @@ If you started the worker locally, stop it in its own terminal with `Ctrl+C`.
 | `WORKER_SOURCE` | unset | Optional source passed to helper scripts or Linux worker container |
 | `WORKER_VIDEO_DEVICE` | `/dev/video0` | Linux webcam device path for Docker passthrough |
 | `WORKER_BIND_HOST` | `0.0.0.0` | Bind host for Linux worker container and local Linux helper script |
+| `WORKER_STREAM_MODE` | `auto` | Docker worker stream mode: `auto`, `webrtc`, or `mjpeg` |
+| `WORKER_PERFORMANCE_PROFILE` | `auto` | Docker worker runtime tuning profile: `auto`, `max`, or `off` |
+| `WORKER_STREAM_QUALITY` | `auto` | Docker worker capture/MJPEG preset: `auto`, `low`, `medium`, `high`, or `ultra` |
+| `WORKER_JPEG_QUALITY` | `88` | Docker worker MJPEG JPEG quality |
+| `WORKER_WEBRTC_CODEC` | `auto` | Docker worker preferred WebRTC codec |
+| `WORKER_WEBRTC_BITRATE` | `-1` | Docker worker WebRTC bitrate in kbps (`-1` = hardware-aware auto) |
+| `WORKER_WEBRTC_FPS` | `0` | Docker worker WebRTC FPS (`0` = hardware-aware auto) |
+| `WORKER_CAMERA_FPS` | `0` | Docker worker requested local camera FPS (`0` = auto) |
+
+Example Docker worker tuning in `.env`:
+
+```dotenv
+WORKER_STREAM_QUALITY=high
+WORKER_WEBRTC_BITRATE=8000
+WORKER_WEBRTC_FPS=30
+WORKER_CAMERA_FPS=30
+```
 
 ## Features
 

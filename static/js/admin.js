@@ -23,6 +23,8 @@ async function loadWorkerStatus() {
     const resp = await fetch("/api/state", { cache: "no-store" });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.json();
+    const lastError = data.last_error ? escHtml(data.last_error) : "-";
+    const lastCommand = data.cmd_last ? escHtml(data.cmd_last) : "-";
     el.innerHTML = `
       <div class="table-wrap">
         <table class="admin-table">
@@ -31,6 +33,8 @@ async function loadWorkerStatus() {
           <tr><th>FPS</th><td>${data.fps != null ? Number(data.fps).toFixed(1) : "-"}</td></tr>
           <tr><th>Pose</th><td>${data.pose_enabled ? "on" : "off"}</td></tr>
           <tr><th>Inference</th><td>${data.inference_enabled ? "on" : "off"}</td></tr>
+          <tr><th>Last command</th><td>${lastCommand}</td></tr>
+          <tr><th>Worker error</th><td>${lastError}</td></tr>
           <tr><th>Stream backend</th><td>${escHtml(data.stream_backend || "-")}</td></tr>
           <tr><th>WebRTC available</th><td>${data.webrtc_available ? "yes" : "no"}</td></tr>
         </table>
@@ -47,7 +51,10 @@ async function adminCmd(cmd) {
       headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
       body: JSON.stringify({ cmd })
     });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(payload.error || payload.detail || ("HTTP " + resp.status));
+    }
     window.setTimeout(loadWorkerStatus, 600);
   } catch (err) {
     alert("Command failed: " + err.message);

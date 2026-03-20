@@ -2,8 +2,20 @@
 {% block title %}Login - sentinelCam{% endblock %}
 {% block content %}
 <div class="login-layout login-layout-compact">
+  <a href="/auth/login" class="nav-brand login-site-brand" aria-label="sentinelCam login">
+    <span class="nav-brand-mark" aria-hidden="true">
+      <img src="/static/branding/logo-mark.png" alt="" class="nav-brand-logo" width="32" height="32" />
+    </span>
+    <span class="login-site-brand-copy">
+      <strong class="nav-brand-title">sentinelCam</strong>
+      <span class="nav-brand-subtitle">Control surface</span>
+    </span>
+  </a>
   <section class="panel login-panel login-panel-compact">
-    <span class="eyebrow">sentinelCam</span>
+    <div class="login-hero-mark" aria-hidden="true">
+      <img src="/static/branding/logo-emblem.png" alt="" class="login-hero-logo" width="88" height="86" />
+    </div>
+    <span class="eyebrow">Secure access</span>
     <h1>Welcome back</h1>
     <p class="panel-intro">Sign in with your password or a passkey.</p>
     <div id="error-msg" class="error-msg" style="display:none"></div>

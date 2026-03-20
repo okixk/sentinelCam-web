@@ -37,6 +37,12 @@ services:
     environment:
       WEB_AUTH_TOKEN: ${WORKER_TOKEN:-}
       WEB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      YOLO_CONFIG_DIR: /app/.runtime/ultralytics_config
+      SC_WEIGHTS_DIR: /app/.runtime/weights
+      SC_RUNS_DIR: /app/.runtime/runs
+      SC_DATASETS_DIR: /app/.runtime/datasets
+    volumes:
+      - ../sentinelCam-worker/.runtime:/app/.runtime
     command:
       - "--host"
       - "${WORKER_BIND_HOST:-0.0.0.0}"
@@ -44,9 +50,28 @@ services:
       - "8080"
       - "--source"
       - "${WORKER_SOURCE:-0}"
+      - "--device"
+      - "${WORKER_DEVICE:-auto}"
       - "--no-window"
       - "--stream"
-      - "auto"
+      - "${WORKER_STREAM_MODE:-auto}"
+      - "--use-pose"
+      - "--max-fps"
+      - "${WORKER_MAX_FPS:-120}"
+      - "--performance-profile"
+      - "${WORKER_PERFORMANCE_PROFILE:-auto}"
+      - "--stream-quality"
+      - "${WORKER_STREAM_QUALITY:-auto}"
+      - "--jpeg-quality"
+      - "${WORKER_JPEG_QUALITY:-88}"
+      - "--webrtc-codec"
+      - "${WORKER_WEBRTC_CODEC:-auto}"
+      - "--webrtc-bitrate"
+      - "${WORKER_WEBRTC_BITRATE:--1}"
+      - "--webrtc-fps"
+      - "${WORKER_WEBRTC_FPS:-0}"
+      - "--camera-fps"
+      - "${WORKER_CAMERA_FPS:-0}"
     devices:
       - "${WORKER_VIDEO_DEVICE:-/dev/video0}:${WORKER_VIDEO_DEVICE:-/dev/video0}"
     group_add:

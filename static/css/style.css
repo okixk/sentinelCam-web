@@ -410,27 +410,41 @@ button:disabled,
 .nav-brand {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   text-decoration: none;
 }
 
 .nav-brand-mark {
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   display: grid;
   place-items: center;
-  border-radius: 15px;
-  background:
-    linear-gradient(145deg, rgba(51, 197, 163, 0.9), rgba(90, 183, 255, 0.95));
-  color: #041019;
-  font-size: 0.94rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  box-shadow: 0 18px 28px rgba(51, 197, 163, 0.18);
+  flex: 0 0 auto;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 18px 28px rgba(0, 0, 0, 0.22);
+}
+
+.nav-brand-logo {
+  display: block;
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.nav-brand-subtitle {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .nav-brand-title {
   font-size: 1rem;
+  line-height: 1.1;
   letter-spacing: 0.02em;
 }
 
@@ -512,6 +526,42 @@ button:disabled,
 .login-layout-compact {
   grid-template-columns: minmax(340px, 500px);
   justify-content: center;
+  padding-top: 110px;
+}
+
+.login-site-brand {
+  position: absolute;
+  top: 28px;
+  left: 24px;
+  z-index: 2;
+}
+
+.login-site-brand-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.login-site-brand .nav-brand-mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 18px;
+}
+
+.login-site-brand .nav-brand-logo {
+  width: 34px;
+  height: 34px;
+}
+
+.login-hero-mark {
+  margin-bottom: 18px;
+}
+
+.login-hero-logo {
+  display: block;
+  width: 88px;
+  max-width: 100%;
+  height: auto;
+  filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.28));
 }
 
 .login-aside {
@@ -1177,6 +1227,10 @@ button:disabled,
     padding: 24px 18px 42px;
   }
 
+  .login-layout-compact {
+    padding-top: 92px;
+  }
+
   .page-hero,
   .stream-toolbar,
   .filter-bar,
@@ -1199,6 +1253,11 @@ button:disabled,
 
   .nav-links {
     width: 100%;
+  }
+
+  .login-site-brand {
+    top: 20px;
+    left: 18px;
   }
 }
 
