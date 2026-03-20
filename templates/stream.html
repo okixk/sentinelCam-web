@@ -1,9 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Stream – sentinelCam{% endblock %}
 {% block content %}
-<div class="page">
+<div class="page page-wide">
+  <section class="page-hero">
+    <div class="page-title-group">
+      <h1>Live stream</h1>
+      <p class="page-lead">Watch the feed, capture a frame, or record a clip.</p>
+    </div>
+    <div class="hero-side">
+      <div id="workerHealthBadge" class="status-badge" data-state="connecting">
+        <span class="status-dot"></span>
+        <span id="workerHealthText">Checking worker</span>
+      </div>
+    </div>
+  </section>
+
   <div class="stream-layout">
-    <div class="panel stream-panel">
+    <section class="panel stream-panel stream-stage">
       <div class="viewer" id="stream-container">
         <div id="busyOverlay" class="busy-overlay">
           <div class="busy-card">
@@ -11,7 +24,7 @@
               <div class="spinner"></div>
               <div>
                 <div id="busyTitle">Switching model...</div>
-                <div class="small">The worker applies the command after the model is loaded.</div>
+                <div class="small">The worker applies the command after the new model finishes loading.</div>
               </div>
             </div>
             <div class="progress"></div>
@@ -21,49 +34,71 @@
         <video id="stream" class="stream-media" autoplay playsinline muted aria-label="Live camera feed"></video>
         <img id="streamFallback" class="stream-media" alt="sentinelCam MJPEG fallback" />
       </div>
-      <div id="status" role="status" aria-live="polite" style="margin-top:8px; color:var(--muted); min-height:1.5em;">Idle.</div>
-      <div class="row" style="margin-top:8px;">
-        <button id="capture-btn" data-action="capture">📷 Capture</button>
-        <button id="record-btn" data-action="record">⏺ Record</button>
-        <span id="record-timer" style="display:none; color:var(--danger); font-variant-numeric:tabular-nums; padding:10px 4px;"></span>
+
+      <div class="stream-toolbar">
+        <div>
+          <h2>Viewer</h2>
+        </div>
+        <div class="stream-actions">
+          <button id="capture-btn" data-action="capture">Capture frame</button>
+          <button id="record-btn" data-action="record">Record clip</button>
+          <span id="record-timer" class="record-timer"></span>
+        </div>
       </div>
-    </div>
-    <div class="panel info-panel">
-      <h3 style="margin:0 0 12px">Status</h3>
-      <div id="state" class="state-chips">
-        <div class="chip">Connection: <strong id="stateConnection">Proxy</strong></div>
-        <div class="chip">Stream: <strong id="stateStreamMode" data-mode="idle">Idle</strong></div>
-        <div class="chip">Preset: <strong id="statePreset">-</strong></div>
-        <div class="chip">Detection: <strong id="stateDet">-</strong></div>
-        <div class="chip">Pose: <strong id="statePose">-</strong></div>
-        <div class="chip">Codec: <strong id="stateCodec">-</strong></div>
-        <div class="chip">Bitrate: <strong id="stateBitrate">-</strong></div>
-        <div class="chip">FPS: <strong id="stateFps">-</strong></div>
-        <div class="chip">Inference: <strong id="stateInference">-</strong></div>
+
+      <div class="status-strip">
+        <div id="status" role="status" aria-live="polite">Idle.</div>
       </div>
-      <div id="connectionNote" class="small" style="margin:8px 0 4px">Same-origin proxy mode.</div>
-      <div id="streamModeNote" class="small">WebRTC first. MJPEG fallback used when worker does not expose WebRTC.</div>
-      <hr style="border-color:var(--border); margin: 12px 0">
-      <h3 style="margin:0 0 12px">Controls</h3>
-      <div class="row">
-        <button id="btnPrev" data-action="cmd" data-cmd="n" data-busy="Switching to previous model..." class="secondary">◀ Prev</button>
-        <button id="btnNext" data-action="cmd" data-cmd="m" data-busy="Switching to next model..." class="secondary">▶ Next</button>
-        <button data-action="cmd" data-cmd="p" class="secondary">Pose</button>
-        <button data-action="cmd" data-cmd="o" class="secondary">Overlay</button>
-        <button data-action="cmd" data-cmd="i" class="secondary">Inference</button>
-        <button data-action="cmd" data-cmd="q" class="danger">Quit</button>
-      </div>
-      <div class="field" style="margin-top:8px;">
-        <label for="base">Worker URL</label>
-        <input id="base" type="text" placeholder="/ or http://127.0.0.1:8080" style="width:100%; min-width:0;" spellcheck="false" aria-label="Worker base URL" />
-      </div>
-      <button id="btnConnect" data-action="connect" style="margin-top:8px;">Connect</button>
-      <hr style="border-color:var(--border); margin: 12px 0">
-      <h3 style="margin:0 0 12px">🔑 My Passkeys</h3>
-      <div id="passkeys-list" style="font-size:0.9rem;">Loading…</div>
-      <button id="register-passkey-btn" class="secondary" style="margin-top:8px;">+ Register new Passkey</button>
-    </div>
+    </section>
+
+    <aside class="sidebar-stack">
+      <section class="panel info-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Worker status</h2>
+          </div>
+          <span class="panel-tag">Live</span>
+        </div>
+        <div id="state" class="state-chips">
+          <div class="chip">Connection: <strong id="stateConnection">Proxy</strong></div>
+          <div class="chip">Stream: <strong id="stateStreamMode" data-mode="idle">Idle</strong></div>
+          <div class="chip">Preset: <strong id="statePreset">-</strong></div>
+          <div class="chip">Detection: <strong id="stateDet">-</strong></div>
+          <div class="chip">Pose: <strong id="statePose">-</strong></div>
+          <div class="chip">Codec: <strong id="stateCodec">-</strong></div>
+          <div class="chip">Bitrate: <strong id="stateBitrate">-</strong></div>
+          <div class="chip">FPS: <strong id="stateFps">-</strong></div>
+          <div class="chip">Inference: <strong id="stateInference">-</strong></div>
+        </div>
+        <div class="note-block">
+          <div id="streamModeNote" class="small">WebRTC first, MJPEG fallback if needed.</div>
+        </div>
+        <div class="control-grid">
+          <div class="row">
+            <button id="btnPrev" data-action="cmd" data-cmd="n" data-busy="Switching to previous model..." class="secondary">Previous model</button>
+            <button id="btnNext" data-action="cmd" data-cmd="m" data-busy="Switching to next model..." class="secondary">Next model</button>
+            <button data-action="cmd" data-cmd="p" class="secondary">Toggle pose</button>
+            <button data-action="cmd" data-cmd="o" class="secondary">Toggle overlay</button>
+            <button data-action="cmd" data-cmd="i" class="secondary">Toggle inference</button>
+            <button data-action="cmd" data-cmd="q" class="danger">Stop worker</button>
+          </div>
+          <button id="btnConnect" data-action="connect" class="secondary">Reconnect</button>
+          <input id="base" type="hidden" value="/" aria-hidden="true" />
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Passkeys</h2>
+            <p>Optional faster sign-in on this device.</p>
+          </div>
+        </div>
+        <div id="passkeys-list" class="inline-list">Loading...</div>
+        <button id="register-passkey-btn" class="secondary">Register new passkey</button>
+      </section>
+    </aside>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/stream.js"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/stream.js?v=20260320b"></script>
 {% endblock %}

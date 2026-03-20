@@ -1,173 +1,136 @@
-# sentinelCam Web Development
+# sentinelCam Web
 
-`sentinelCam-web` is the browser UI for the sentinelCam stack.
+`sentinelCam-web` is the browser control surface for the sentinelCam stack.
 
-It connects to a running [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) instance, displays the processed stream, shows worker state, and provides runtime control, user management, and a recording gallery.
+It connects to a running `sentinelCam-worker`, displays the live stream, shows worker state, lets users control inference, and stores captures and recordings with authentication and sharing.
 
-## Features
+## What this repo contains
 
-### Stream & Control
-- Live **WebRTC** stream viewer (MJPEG fallback)
-- Worker status display (preset, detection, pose, FPS, inference, codec, bitrate)
-- Model switching with loading feedback
-- Remote worker control (next/prev model, pose, overlay, inference, quit)
-- **Capture** snapshots and **record** video clips from the stream
-- KI-Overlay toggle (switch between raw and AI-processed frames)
-
-### Gallery & Sharing
-- **Gallery** with thumbnail grid, filtering, sorting, and pagination
-- Recordings stored with raw + overlay variants
-- **Sharing**: Users can share individual recordings with all other users (🔓/🔒 toggle)
-- **Admin access**: Admin can view and delete all recordings, but cannot share other users' recordings
-- Download and delete from the detail view
-
-### Authentication & Security
-- **Session-based authentication** with Argon2 password hashing
-- **WebAuthn / Passkey** support for all users (register from stream page or admin panel)
-- Dynamic WebAuthn RP-ID (auto-detects domain from request, works with `localhost` and `127.0.0.1`)
-- **Admin dashboard** (user management, session management, worker control, passkey management)
-- **CSRF protection** on all state-changing endpoints
-- **Content Security Policy** with script nonces
-- **Rate limiting** and account lockout on login
-- Same-origin proxy for production-safe token handling
-
-### Infrastructure
-- **Docker** support (hybrid architecture)
-- SQLite database with automatic migrations
-- Persistent data volume for DB and recordings
-- Health check endpoints (`/healthz` for the web app, `/health` for the worker proxy)
+- FastAPI web app with session auth and WebAuthn/passkeys
+- Same-origin proxy to the worker for state, commands, MJPEG, and WebRTC signaling
+- SQLite-backed user, session, and recording storage
+- Jinja-rendered UI for stream, gallery, recording detail, and admin workflows
+- Docker packaging for the web app and optional Linux worker container
 
 ## Architecture
 
-```
-camera → sentinelCam-worker (local or Docker, port 8080) → sentinelCam-web (Docker, port 3000) → browser
-```
-
-On **Windows/macOS**, the worker usually runs **locally** (needs webcam access) while the web app runs in **Docker**.  
-The web container connects to the worker via `host.docker.internal:8080`.
-
-On **Linux**, the same default Compose file works too. Start the worker with `--host 0.0.0.0` (or another non-loopback host address) so the Dockerized web app can still reach it via `host.docker.internal:8080`.
-
-If you also want the worker in Docker on Linux, add [`docker-compose.linux-worker.yml`](./docker-compose.linux-worker.yml).  
-For webcam passthrough, add [`docker-compose.linux-cam.yml`](./docker-compose.linux-cam.yml) on top.  
-[`docker-compose.linux.yml`](./docker-compose.linux.yml) remains available as a legacy fallback if your worker must stay bound to `127.0.0.1`.
-
-## Quick start (Windows)
-
-### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) cloned next to this repo
-- Python 3.12+ (for the worker)
-- Git
-
-### 1. Clone & switch branch
-
-```powershell
-git clone https://github.com/okixk/sentinelCam-web.git
-cd sentinelCam-web
-git fetch origin
-git switch --track origin/copilot/add-docker-support
+```text
+camera/source -> sentinelCam-worker (port 8080) -> sentinelCam-web (port 3000) -> browser
 ```
 
-### 2. Configure environment
+- Windows and macOS typically run the worker locally because camera access usually needs the host OS.
+- Linux can run the worker locally or in Docker.
+- The web app defaults to proxy mode, so worker credentials stay server-side.
 
-Create a `.env` file in the project root:
+## Quick start
+
+### 1. Create `.env`
+
+Copy `.env.example` to `.env` and set at least:
 
 ```dotenv
-WORKER_TOKEN=<random-secret>
+WORKER_TOKEN=<shared-secret>
 ADMIN_USER=admin
 ADMIN_PASSWORD=<strong-password-min-12-chars>
 WEBAUTHN_RP_ID=localhost
 ```
 
-> **Note:** `WORKER_TOKEN` must match the token used by the worker (`WEB_AUTH_TOKEN`).  
-> `ADMIN_PASSWORD` must be at least 12 characters.
+Important:
 
-### 3. Start the worker
+- `WORKER_TOKEN` must match the worker's `WEB_AUTH_TOKEN`.
+- `ADMIN_PASSWORD` is only used when the database is empty on first start.
+- The helper scripts in `scripts/` read from this `.env`.
 
-Open a PowerShell terminal:
+### 2. Make sure the worker repo exists next to this repo
+
+Expected default layout:
+
+```text
+sentinelCam-web/
+sentinelCam-worker/
+```
+
+If your worker repo lives somewhere else, use `SENTINELCAM_WORKER_DIR` or the script flag shown below.
+
+### 3. Start the stack
+
+Choose one path:
+
+#### Windows local worker
 
 ```powershell
-cd path\to\sentinelCam-worker
-$env:WEB_AUTH_TOKEN = "<same WORKER_TOKEN as in .env>"
-$env:WEB_ALLOWED_ORIGINS = "http://localhost:3000"
-.\run.bat --no-window --stream auto
+.\scripts\start-local-worker.ps1
 ```
 
-Wait until you see:
-```
-INFO: Stream (MJPEG fallback): http://localhost:8080/stream.mjpg
-```
+What it does:
 
-### 4. Start the web app
+- runs `docker compose up -d --build web` for the web service
+- reads `WORKER_TOKEN` from `.env`
+- sets `WEB_ALLOWED_ORIGINS` for local browser access
+- launches the sibling `sentinelCam-worker` repo
 
-Open a second PowerShell terminal:
+#### Linux local worker
 
-```powershell
-cd path\to\sentinelCam-web
-docker compose up -d
-```
-
-Check that the container is healthy:
-
-```powershell
-docker compose ps
+```bash
+bash ./scripts/start-local-worker.sh
 ```
 
-### 5. Open
+What it does:
 
-Go to **http://localhost:3000** and log in with the credentials from `.env`.
+- runs `docker compose up -d --build web` for the web service
+- starts the worker locally with `--host 0.0.0.0`
+- uses `WORKER_SOURCE` and `WORKER_BIND_HOST` from `.env` when set
 
-### Stopping
+#### Linux Docker worker
 
-```powershell
-# Stop the web container:
-docker compose down
-
-# Stop the worker: press Ctrl+C in the worker terminal
+```bash
+bash ./scripts/start-docker-worker.sh
 ```
 
-### Rebuilding after code changes
+This runs the full Linux stack from `docker-compose.yml`.
 
-```powershell
+Notes:
+
+- set `WORKER_VIDEO_DEVICE` in `.env` if your camera is not `/dev/video0`
+- set `WORKER_SOURCE` in `.env` for RTSP or other non-camera sources
+- use `WORKER_VIDEO_DEVICE=/dev/null` for remote-stream-only hosts
+
+### 4. Open the app
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+Log in with the credentials from `.env`.
+
+## Manual startup commands
+
+Use these if you do not want the helper scripts.
+
+### Web app
+
+```bash
 docker compose up -d --build
 ```
 
-## Quick start (Linux)
-
-### Prerequisites
-
-- Docker Engine with the Compose plugin installed
-- [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) cloned next to this repo
-- A Linux webcam device such as `/dev/video0`, or another source URL/path
-- Git
-
-### 1. Clone & switch branch
+For a local worker workflow where only the web service should start:
 
 ```bash
-git clone https://github.com/okixk/sentinelCam-web.git
-cd sentinelCam-web
-git fetch origin
-git switch --track origin/copilot/add-docker-support
+docker compose up -d --build web
 ```
 
-### 2. Configure environment
+### Windows local worker
 
-Create a `.env` file in the project root:
-
-```dotenv
-WORKER_TOKEN=<random-secret>
-ADMIN_USER=admin
-ADMIN_PASSWORD=<strong-password-min-12-chars>
-WEBAUTHN_RP_ID=localhost
+```powershell
+cd ..\sentinelCam-worker
+$env:WEB_AUTH_TOKEN = "<same WORKER_TOKEN as in .env>"
+$env:WEB_ALLOWED_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+.\run.bat --no-window --stream auto
 ```
 
-> `WORKER_TOKEN` must match the worker token used inside the Linux stack as well.
-
-### 3. Start the worker
-
-Open a terminal in the worker repo:
+### Linux local worker
 
 ```bash
 cd ../sentinelCam-worker
@@ -176,192 +139,123 @@ export WEB_ALLOWED_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
 ./run.sh --host 0.0.0.0 --no-window --stream auto
 ```
 
-Wait until you see:
-```
-INFO: Stream (MJPEG fallback): http://localhost:8080/stream.mjpg
+If you want a non-default source:
+
+```bash
+./run.sh --host 0.0.0.0 --source rtsp://HOST:PORT/stream --no-window --stream auto
 ```
 
-### 4. Start the web app
+### Linux Docker worker
 
 ```bash
 docker compose up -d --build
 ```
 
-The default Compose file points the web app at `http://host.docker.internal:8080`. On Linux, that works as long as the worker listens on `0.0.0.0` or another non-loopback host address.
+## Verification
 
-#### Optional: run the worker in Docker instead
-
-Add the worker override:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml up -d --build
-```
-
-The worker container uses the host network and listens on `0.0.0.0`, so the web container can still reach it through `host.docker.internal:8080`.
-
-#### With webcam passthrough
-
-Webcam passthrough requires an extra compose override because Docker needs direct access to the camera device:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
-```
-
-To use a different camera device:
-
-```bash
-WORKER_VIDEO_DEVICE=/dev/video2 docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml -f docker-compose.linux-cam.yml up -d --build
-```
-
-#### With a remote stream (no webcam needed)
-
-```bash
-WORKER_SOURCE=rtsp://HOST:PORT/stream docker compose -f docker-compose.yml -f docker-compose.linux-worker.yml up -d --build
-```
-
-### 5. Verify
+Check the web app:
 
 ```bash
 docker compose ps
 curl http://127.0.0.1:3000/healthz
+```
+
+Check the worker:
+
+```bash
 curl http://127.0.0.1:8080/health
 ```
 
-If you started the worker in Docker too, include `-f docker-compose.linux-worker.yml` in the `docker compose ps` command.
+If you started the worker locally, its own terminal logs are usually the fastest place to diagnose startup issues.
 
-### 6. Open
+## Stopping
 
-Go to **http://localhost:3000** and log in with the credentials from `.env`.
-
-### Stopping
+Stop the web app:
 
 ```bash
 docker compose down
 ```
 
-If you started the worker in Docker as well, include `-f docker-compose.linux-worker.yml` and optionally `-f docker-compose.linux-cam.yml` in the `down` command.
+If you started the worker locally, stop it in its own terminal with `Ctrl+C`.
 
-## Why the worker runs locally
+If you started the Linux Docker worker manually, include the same override files in the `down` command.
 
-Docker on Windows cannot access the host webcam. The worker needs direct camera access, so it runs outside Docker. The web container connects to the local worker via `host.docker.internal`.
+## Docker files
 
-On Linux, bridge-network containers can also use `host.docker.internal`, but the worker must listen on `0.0.0.0` or another non-loopback host address. A worker that only binds to `127.0.0.1` is intentionally not reachable from the Docker bridge network.
-
-If you want the worker in Docker on Linux too, add [`docker-compose.linux-worker.yml`](./docker-compose.linux-worker.yml). For webcam access, stack [`docker-compose.linux-cam.yml`](./docker-compose.linux-cam.yml) on top. Without webcam passthrough, you can still use remote streams via `WORKER_SOURCE`. Keep [`docker-compose.linux.yml`](./docker-compose.linux.yml) only as a legacy fallback for loopback-only workers.
-
-## User roles & permissions
-
-| Action                  | Normal User        | Admin              |
-|-------------------------|--------------------|--------------------|
-| View own recordings     | ✅                 | ✅                 |
-| View shared recordings  | ✅                 | ✅                 |
-| View all recordings     | ❌                 | ✅                 |
-| Share own recordings    | ✅                 | ✅                 |
-| Share others' recordings| ❌                 | ❌                 |
-| Delete own recordings   | ✅                 | ✅                 |
-| Delete others' recordings| ❌                | ✅                 |
-| Register passkeys       | ✅ (stream page)   | ✅ (admin panel)   |
-| Manage users            | ❌                 | ✅                 |
-| Control worker          | ✅ (stream page)   | ✅ (both pages)    |
-
-## Project structure
-
-```
-app/                    # FastAPI application
-  auth/                 #   Authentication (login, WebAuthn/Passkey, sessions)
-  dashboard/            #   Admin dashboard
-  gallery/              #   Recording gallery pages
-  proxy/                #   Worker API proxy (stream, signaling, status)
-  recording/            #   Capture, record, upload, share endpoints
-  config.py             #   Settings from environment (pydantic-settings)
-  database.py           #   SQLite (aiosqlite), schema & migrations
-  security.py           #   Password hashing, CSRF, rate limiting
-  main.py               #   App entry point, CSP middleware, routes
-static/
-  css/style.css         # Styles
-  js/
-    auth.js             #   Login & passkey authentication
-    stream.js           #   Stream page (WebRTC, capture, passkey registration)
-    admin.js            #   Admin panel (user/session mgmt, passkey mgmt)
-    gallery.js          #   Gallery grid (filtering, sorting, share badges)
-templates/              # Jinja2 HTML templates
-  base.html             #   Layout with CSP nonce
-  login.html            #   Login page
-  stream.html           #   Main stream & control page
-  admin.html            #   Admin dashboard
-  gallery.html          #   Gallery grid
-  gallery_detail.html   #   Recording detail with overlay toggle & sharing
-docker-compose.yml           # Docker Compose (web service only)
-docker-compose.linux.yml     # Optional legacy Linux override (web on host network)
-docker-compose.linux-worker.yml  # Optional Linux worker container
-docker-compose.linux-cam.yml # Linux webcam passthrough override
-Dockerfile              # Python 3.13-slim container
-run_web.py              # Uvicorn launcher
-web_server.py           # Standalone Python proxy (non-Docker alternative)
-```
+- `docker-compose.yml`
+  - primary compose file
+  - starts the full Linux stack by default
+  - for local-worker workflows, start only the web service with `docker compose up -d --build web`
 
 ## Environment variables
 
-| Variable                   | Default        | Description                                |
-|----------------------------|----------------|--------------------------------------------|
-| `WORKER_BASE_URL`          | `http://127.0.0.1:8080` app default, `http://host.docker.internal:8080` in Compose | Worker connection URL |
-| `WORKER_TOKEN`             | *(required)*   | Shared secret for worker authentication    |
-| `WEB_PORT`                 | `3000`         | Port the web server listens on             |
-| `PUBLIC`                   | `0`            | Bind to `0.0.0.0` when `1`                 |
-| `INITIAL_ADMIN_USER`       | —              | Create admin user on first start           |
-| `INITIAL_ADMIN_PASSWORD`   | —              | Password for initial admin (min 12 chars)  |
-| `WEBAUTHN_RP_ID`           | `localhost`    | WebAuthn Relying Party ID (domain)         |
-| `SECRET_KEY`               | *(auto)*       | Session signing key (auto-generated if empty) |
-| `SESSION_MAX_AGE_HOURS`    | `8`            | Session expiry                             |
-| `LOGIN_RATE_LIMIT`         | `5`            | Max login attempts per minute              |
-| `LOCKOUT_THRESHOLD`        | `10`           | Failed logins before account lockout       |
-| `LOCKOUT_DURATION_MINUTES` | `30`           | Lockout duration                           |
-| `MAX_UPLOAD_SIZE_MB`       | `100`          | Max recording upload size                  |
-| `STORAGE_QUOTA_PER_USER_MB`| `500`          | Storage quota per user                     |
+| Variable | Default | Purpose |
+|---|---|---|
+| `WORKER_TOKEN` | none | Shared secret between web app and worker |
+| `WORKER_BASE_URL` | app default `http://127.0.0.1:8080`, Compose default `http://host.docker.internal:8080` | Worker URL used by the proxy |
+| `WEB_PORT` | `3000` | Port for the web app |
+| `PUBLIC` | `0` | Bind to `0.0.0.0` when running the app directly |
+| `ADMIN_USER` | `admin` | Initial admin username for first boot |
+| `ADMIN_PASSWORD` | none | Initial admin password for first boot |
+| `WEBAUTHN_RP_ID` | `localhost` | Passkey relying-party ID |
+| `WORKER_SOURCE` | unset | Optional source passed to helper scripts or Linux worker container |
+| `WORKER_VIDEO_DEVICE` | `/dev/video0` | Linux webcam device path for Docker passthrough |
+| `WORKER_BIND_HOST` | `0.0.0.0` | Bind host for Linux worker container and local Linux helper script |
 
-## Running without Docker
+## Features
 
-```bash
-pip install -r requirements.txt
-python run_web.py
+### Stream and control
+
+- WebRTC viewer with MJPEG fallback
+- worker status chips for preset, detection, FPS, inference, codec, bitrate
+- remote worker controls for model switching, pose, overlay, inference, and quit
+- in-browser capture and recording upload
+
+### Authentication and security
+
+- session-based auth with Argon2 password hashing
+- WebAuthn/passkeys
+- CSRF protection for state-changing requests
+- security headers and CSP nonces
+- login rate limiting and account lockout
+
+### Gallery and admin
+
+- gallery with filtering, sorting, pagination, and detail views
+- private/shared recording model
+- user and session management for admins
+
+## Project layout
+
+```text
+app/
+  auth/         authentication, sessions, WebAuthn routes
+  dashboard/    admin routes
+  gallery/      gallery pages
+  proxy/        worker proxy routes
+  recording/    upload, listing, file, delete, share routes
+  config.py     environment-backed settings
+  database.py   SQLite schema and first-run admin bootstrap
+  main.py       FastAPI app entry point
+static/
+  css/style.css
+  js/
+templates/
+scripts/
+  start-local-worker.ps1
+  start-local-worker.sh
+  start-docker-worker.sh
+Dockerfile
+docker-compose.yml
+run_web.py
+web_server.py
 ```
 
-Set the environment variables listed above, or create a `.env` file.
+## Legacy path
 
-## Network / Firewall
+`web_server.py`, `index.html`, and `apache/sentinelcam.conf.example` describe an older standalone/static-hosting path. The Docker and FastAPI app flow in `run_web.py` + `app/main.py` is the primary path for active development.
 
-| Connection           | Port        | Protocol | Purpose                            |
-|----------------------|-------------|----------|------------------------------------|
-| Browser → Web        | 3000        | TCP      | Web UI + API proxy                 |
-| Web → Worker         | 8080        | TCP      | HTTP proxy (API, signaling, MJPEG) |
-| Browser ↔ Worker     | 40000–40100 | UDP      | WebRTC media (direct, optional)    |
+## Related repos
 
-- **MJPEG** runs fully through the proxy (no direct connection needed).
-- **WebRTC** requires direct UDP between browser and worker.
-
-## API endpoints
-
-| Method   | Path                                | Auth     | Description                         |
-|----------|-------------------------------------|----------|-------------------------------------|
-| `POST`   | `/auth/login`                       | —        | Login with username/password        |
-| `POST`   | `/auth/logout`                      | Session  | Logout                              |
-| `POST`   | `/auth/webauthn/register/begin`     | Session  | Start passkey registration          |
-| `POST`   | `/auth/webauthn/register/complete`  | Session  | Finish passkey registration         |
-| `POST`   | `/auth/webauthn/login/begin`        | —        | Start passkey login                 |
-| `POST`   | `/auth/webauthn/login/complete`     | —        | Finish passkey login                |
-| `GET`    | `/auth/webauthn/credentials`        | Session  | List user's passkeys                |
-| `DELETE` | `/auth/webauthn/credentials/{id}`   | Session  | Delete a passkey                    |
-| `GET`    | `/api/recordings`                   | Session  | List recordings (own + shared)      |
-| `GET`    | `/api/recordings/{id}`              | Session  | Recording metadata                  |
-| `GET`    | `/api/recordings/{id}/file`         | Session  | Serve recording file                |
-| `GET`    | `/api/recordings/{id}/thumbnail`    | Session  | Serve thumbnail                     |
-| `POST`   | `/api/recordings/upload`            | Session  | Upload a captured recording         |
-| `DELETE` | `/api/recordings/{id}`              | Session  | Delete recording (owner or admin)   |
-| `PATCH`  | `/api/recordings/{id}/share`        | Session  | Toggle sharing (owner only)         |
-| `GET`    | `/api/proxy/*`                      | Session  | Proxy to worker API                 |
-| `GET`    | `/health`                           | —        | Health check                        |
-
-## Related repositories
-
-- **Worker:** [`sentinelCam-worker`](https://github.com/okixk/sentinelCam-worker) – Camera capture & YOLO processing (required)
-- **Edge:** [`sentinelCam-edge`](https://github.com/okixk/sentinelCam-edge) – Future camera-side capture node (optional)
+- Worker: `sentinelCam-worker`
+- Edge capture node: `sentinelCam-edge`

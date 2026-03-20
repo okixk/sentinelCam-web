@@ -2,20 +2,31 @@
 {% block title %}Gallery – sentinelCam{% endblock %}
 {% block content %}
 <div class="page">
-  <h2>Gallery</h2>
-  <div class="row" style="margin-bottom:16px; align-items:center; flex-wrap:wrap; gap:8px;">
-    <select id="type-filter">
-      <option value="">All</option>
-      <option value="image">📷 Images</option>
-      <option value="video">🎥 Videos</option>
-    </select>
-    <select id="sort-filter">
-      <option value="newest">Newest first</option>
-      <option value="oldest">Oldest first</option>
-    </select>
-  </div>
+  <section class="page-hero">
+    <div class="page-title-group">
+      <h1>Gallery</h1>
+      <p class="page-lead">Saved images and clips.</p>
+    </div>
+  </section>
+
+  <section class="panel gallery-controls">
+    <div class="filter-bar">
+      <div class="filter-inputs">
+        <select id="type-filter">
+          <option value="">All media</option>
+          <option value="image">Images</option>
+          <option value="video">Videos</option>
+        </select>
+        <select id="sort-filter">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+      </div>
+    </div>
+  </section>
+
   <div id="gallery-grid" class="gallery-grid"></div>
   <div id="pagination" class="pagination"></div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js?v=20260320b"></script>
 {% endblock %}

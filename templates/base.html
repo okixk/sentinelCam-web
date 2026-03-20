@@ -5,20 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}sentinelCam{% endblock %}</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/style.css?v=20260320b">
   {% block head %}{% endblock %}
 </head>
 <body>
   {% if user is defined %}
   <nav class="navbar">
-    <div class="nav-brand">sentinelCam</div>
+    <a href="/" class="nav-brand">
+      <span class="nav-brand-mark">SC</span>
+      <strong class="nav-brand-title">sentinelCam</strong>
+    </a>
+    <div class="nav-session">
+      <span class="nav-user">{{ user.username }}</span>
+    </div>
     <div class="nav-links">
-      <a href="/" class="nav-link {% if request.url.path == '/' %}active{% endif %}">📹 Stream</a>
-      <a href="/gallery" class="nav-link {% if request.url.path.startswith('/gallery') %}active{% endif %}">🖼 Gallery</a>
+      <a href="/" class="nav-link {% if request.url.path == '/' %}active{% endif %}">Stream</a>
+      <a href="/gallery" class="nav-link {% if request.url.path.startswith('/gallery') %}active{% endif %}">Gallery</a>
       {% if user.role == 'admin' %}
-      <a href="/admin" class="nav-link {% if request.url.path == '/admin' %}active{% endif %}">⚙️ Admin</a>
+      <a href="/admin" class="nav-link {% if request.url.path == '/admin' %}active{% endif %}">Admin</a>
       {% endif %}
-      <button id="logout-btn" class="nav-btn">Logout</button>
+      <button id="logout-btn" class="nav-btn secondary">Logout</button>
     </div>
   </nav>
   {% endif %}
@@ -27,14 +33,79 @@
   </main>
   <script nonce="{{ request.state.csp_nonce }}">
     function getCsrf() {
-      return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
+      return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || "";
     }
+
     async function logout() {
-      await fetch('/auth/logout', {method:'POST', headers:{'X-CSRF-Token': getCsrf()}});
-      window.location.href = '/auth/login';
+      await fetch("/auth/logout", {
+        method: "POST",
+        headers: { "X-CSRF-Token": getCsrf() }
+      });
+      window.location.href = "/auth/login";
     }
-    const logoutBtn = document.getElementById('logout-btn');
-    if (logoutBtn) logoutBtn.addEventListener('click', logout);
+
+    async function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+
+    function getCopyPayload(button) {
+      const direct = button.dataset.copyText;
+      if (direct) return direct;
+      const targetSelector = button.dataset.copyTarget;
+      if (!targetSelector) return "";
+      const target = document.querySelector(targetSelector);
+      return target ? target.textContent.trim() : "";
+    }
+
+    function initCopyButtons() {
+      const buttons = document.querySelectorAll("[data-copy-text], [data-copy-target]");
+      buttons.forEach(button => {
+        button.addEventListener("click", async () => {
+          const payload = getCopyPayload(button);
+          if (!payload) return;
+          const originalLabel = button.dataset.originalLabel || button.textContent;
+          button.dataset.originalLabel = originalLabel;
+          try {
+            await copyText(payload);
+            button.dataset.copied = "true";
+            button.textContent = "Copied";
+            window.setTimeout(() => {
+              button.dataset.copied = "false";
+              button.textContent = originalLabel;
+            }, 1500);
+          } catch (error) {
+            button.textContent = "Copy failed";
+            window.setTimeout(() => {
+              button.textContent = originalLabel;
+            }, 1500);
+          }
+        });
+      });
+    }
+
+    function populateAppOrigin() {
+      const origin = window.location.origin || "http://localhost:3000";
+      document.querySelectorAll("[data-app-origin]").forEach(el => {
+        el.textContent = origin;
+      });
+    }
+
+    const logoutBtn = document.getElementById("logout-btn");
+    if (logoutBtn) logoutBtn.addEventListener("click", logout);
+    populateAppOrigin();
+    initCopyButtons();
   </script>
   {% block scripts %}{% endblock %}
 </body>

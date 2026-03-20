@@ -2,31 +2,56 @@
 {% block title %}Admin – sentinelCam{% endblock %}
 {% block content %}
 <div class="page">
-  <h2>Admin Dashboard</h2>
-  <div class="admin-grid">
-    <!-- Worker Status -->
-    <div class="panel">
-      <h3>Worker Status</h3>
-      <div id="worker-status">Loading…</div>
-      <div class="row" style="margin-top:12px; flex-wrap:wrap;">
-        <button data-action="admin-cmd" data-cmd="n" data-label="Prev model" class="secondary">◀ Prev</button>
-        <button data-action="admin-cmd" data-cmd="m" data-label="Next model" class="secondary">▶ Next</button>
-        <button data-action="admin-cmd" data-cmd="o" data-label="Toggle overlay" class="secondary">Overlay</button>
-        <button data-action="admin-cmd" data-cmd="i" data-label="Toggle inference" class="secondary">Inference</button>
+  <section class="page-hero">
+    <div class="page-title-group">
+      <span class="eyebrow">Administration</span>
+      <h1>Users, sessions, and worker operations</h1>
+      <p class="page-lead">
+        Use this page to manage accounts, revoke active sessions, and keep the worker healthy without leaving the app.
+      </p>
+    </div>
+    <div class="hero-side">
+      <div class="status-badge" data-state="neutral">
+        <span class="status-dot"></span>
+        <span>Admin session</span>
       </div>
     </div>
-    <!-- User Management -->
+  </section>
+
+  <div class="admin-grid">
     <div class="panel">
-      <h3>Users</h3>
-      <div id="users-table">Loading…</div>
-      <hr style="border-color:var(--border); margin:12px 0">
-      <h4 style="margin:0 0 8px">Create User</h4>
+      <div class="panel-header">
+        <div>
+          <h2>Worker status</h2>
+          <p>Quick visibility into the active preset, stream backend, and inference state.</p>
+        </div>
+        <span class="panel-tag">Polling</span>
+      </div>
+      <div id="worker-status" class="loading-state">Loading...</div>
+      <div class="row" style="margin-top:12px;">
+        <button data-action="admin-cmd" data-cmd="n" data-label="Prev model" class="secondary">Previous model</button>
+        <button data-action="admin-cmd" data-cmd="m" data-label="Next model" class="secondary">Next model</button>
+        <button data-action="admin-cmd" data-cmd="o" data-label="Toggle overlay" class="secondary">Toggle overlay</button>
+        <button data-action="admin-cmd" data-cmd="i" data-label="Toggle inference" class="secondary">Toggle inference</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Users</h2>
+          <p>Create, promote, demote, or remove local accounts.</p>
+        </div>
+      </div>
+      <div id="users-table" class="loading-state">Loading...</div>
+      <hr>
+      <h3>Create user</h3>
       <form id="create-user-form">
-        <div class="field"><label>Username</label><input id="new-username" required style="min-width:0; width:100%;" /></div>
-        <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" required style="min-width:0; width:100%;" /></div>
+        <div class="field"><label>Username</label><input id="new-username" required /></div>
+        <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" required /></div>
         <div class="field">
           <label>Role</label>
-          <select id="new-role" style="padding:10px 12px; font:inherit; border-radius:10px; border:1px solid var(--border); background:var(--panel-2); color:var(--text);">
+          <select id="new-role">
             <option value="viewer">Viewer</option>
             <option value="admin">Admin</option>
           </select>
@@ -34,23 +59,38 @@
         <button type="submit">Create User</button>
       </form>
     </div>
-    <!-- Sessions -->
+
     <div class="panel">
-      <h3>Active Sessions</h3>
-      <div id="sessions-table">Loading…</div>
+      <div class="panel-header">
+        <div>
+          <h2>Active sessions</h2>
+          <p>Revoke sessions when a browser should lose access immediately.</p>
+        </div>
+      </div>
+      <div id="sessions-table" class="loading-state">Loading...</div>
     </div>
-    <!-- Passkeys -->
+
     <div class="panel">
-      <h3>🔑 My Passkeys</h3>
-      <div id="passkeys-list">Loading…</div>
-      <button id="register-passkey-btn" style="margin-top:12px;">+ Register new Passkey</button>
+      <div class="panel-header">
+        <div>
+          <h2>My passkeys</h2>
+          <p>Passkeys registered here are also available from the standard login page.</p>
+        </div>
+      </div>
+      <div id="passkeys-list" class="loading-state">Loading...</div>
+      <button id="register-passkey-btn" class="secondary" style="margin-top:12px;">Register new passkey</button>
     </div>
-    <!-- System Info -->
+
     <div class="panel">
-      <h3>System Info</h3>
-      <div id="system-info">Loading…</div>
+      <div class="panel-header">
+        <div>
+          <h2>Worker startup</h2>
+          <p>Operational entry points live here instead of the regular user stream page.</p>
+        </div>
+      </div>
+      <div id="system-info" class="stack-notes loading-state">Loading...</div>
     </div>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260320b"></script>
 {% endblock %}

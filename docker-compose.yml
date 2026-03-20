@@ -1,3 +1,11 @@
+# Single compose file for the full Linux stack.
+# Run everything with:
+#   docker compose up -d --build
+#
+# On Windows/macOS, the worker usually still runs locally.
+# In that case, start only the web service:
+#   docker compose up -d --build web
+
 services:
   web:
     build: .
@@ -21,6 +29,35 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  worker:
+    build:
+      context: ../sentinelCam-worker
+    network_mode: host
+    environment:
+      WEB_AUTH_TOKEN: ${WORKER_TOKEN:-}
+      WEB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    command:
+      - "--host"
+      - "${WORKER_BIND_HOST:-0.0.0.0}"
+      - "--port"
+      - "8080"
+      - "--source"
+      - "${WORKER_SOURCE:-0}"
+      - "--no-window"
+      - "--stream"
+      - "auto"
+    devices:
+      - "${WORKER_VIDEO_DEVICE:-/dev/video0}:${WORKER_VIDEO_DEVICE:-/dev/video0}"
+    group_add:
+      - video
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   web-data:

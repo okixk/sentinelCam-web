@@ -56,6 +56,8 @@ const stateInferenceEl = document.getElementById("stateInference");
 const captureBtn = document.getElementById("capture-btn");
 const recordBtn = document.getElementById("record-btn");
 const recordTimerEl = document.getElementById("record-timer");
+const workerHealthBadgeEl = document.getElementById("workerHealthBadge");
+const workerHealthTextEl = document.getElementById("workerHealthText");
 
 function getCsrf() {
   return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
@@ -89,6 +91,13 @@ function capabilitiesFromState(state) {
     mjpegAvailable: typeof payload.mjpeg_available === "boolean" ? payload.mjpeg_available : true,
     backend: typeof payload.stream_backend === "string" ? payload.stream_backend : ""
   };
+}
+
+function getBaseInputValue() {
+  if (!baseInputEl) {
+    return IS_FILE_PROTOCOL ? DEFAULT_DIRECT_BASE : "/";
+  }
+  return baseInputEl.value.trim();
 }
 
 function normalizeBaseUrl(url) {
@@ -151,7 +160,7 @@ function describeWorkerNetworkError(error, url, target) {
 }
 
 function resolveTargetBase() {
-  const raw = baseInputEl.value.trim();
+  const raw = getBaseInputValue();
   if (IS_FILE_PROTOCOL) {
     if (!raw || raw === "/") {
       return { kind: "direct", base: DEFAULT_DIRECT_BASE, display: DEFAULT_DIRECT_BASE };
@@ -236,6 +245,11 @@ function setStatus(text, isError = false) {
   statusEl.style.color = isError ? "var(--danger)" : "var(--muted)";
 }
 
+function setWorkerHealth(state, text) {
+  if (workerHealthBadgeEl) workerHealthBadgeEl.dataset.state = state;
+  if (workerHealthTextEl) workerHealthTextEl.textContent = text;
+}
+
 function setBusy(on, title = "Switching model...") {
   busyTitleEl.textContent = title;
   busyOverlayEl.classList.toggle("show", !!on);
@@ -249,22 +263,30 @@ function setPlaceholder(text = "Not connected.", show = true) {
 }
 
 function setConnectionMode(target) {
-  stateConnectionEl.textContent = target.kind === "proxy" ? "Proxy" : "Direct";
-  if (target.kind === "proxy") {
-    connectionNoteEl.textContent = "Same-origin proxy mode. The web server forwards /api/* and /stream.mjpg to the worker.";
-    connectionNoteEl.className = "small";
-  } else {
-    connectionNoteEl.textContent = "Direct browser mode. Use only for local/dev.";
-    connectionNoteEl.className = "small warn";
+  if (stateConnectionEl) {
+    stateConnectionEl.textContent = target.kind === "proxy" ? "Proxy" : "Direct";
+  }
+  if (connectionNoteEl) {
+    if (target.kind === "proxy") {
+      connectionNoteEl.textContent = "Proxy mode is active.";
+      connectionNoteEl.className = "small";
+    } else {
+      connectionNoteEl.textContent = "Direct mode is active.";
+      connectionNoteEl.className = "small warn";
+    }
   }
 }
 
 function setStreamMode(mode, detail = "") {
   const labelMap = { idle: "Idle", connecting: "Connecting", webrtc: "WebRTC", mjpeg: "MJPEG fallback", error: "Error" };
-  stateStreamModeEl.textContent = labelMap[mode] || "Idle";
-  stateStreamModeEl.dataset.mode = mode;
-  streamModeNoteEl.textContent = detail;
-  streamModeNoteEl.className = mode === "error" ? "small error" : mode === "mjpeg" ? "small warn" : "small";
+  if (stateStreamModeEl) {
+    stateStreamModeEl.textContent = labelMap[mode] || "Idle";
+    stateStreamModeEl.dataset.mode = mode;
+  }
+  if (streamModeNoteEl) {
+    streamModeNoteEl.textContent = detail;
+    streamModeNoteEl.className = mode === "error" ? "small error" : mode === "mjpeg" ? "small warn" : "small";
+  }
 }
 
 function hideMedia() {
@@ -411,10 +433,17 @@ async function fetchState() {
   }
   if (state && state.last_error) {
     setBusy(false); pendingSwitch = null;
+    setWorkerHealth("warning", "Worker reported an issue");
     setStatus(state.last_error, true);
   } else if (state && state.worker_alive === false) {
     setBusy(false);
+    setWorkerHealth("warning", "Worker is restarting");
     setStatus("Worker paused or restarting...", true);
+  } else {
+    setWorkerHealth(
+      currentCapabilities.webrtcAvailable === false ? "warning" : "online",
+      currentCapabilities.webrtcAvailable === false ? "Worker online (MJPEG only)" : "Worker online"
+    );
   }
   if (pendingSwitch && Number(state && state.cmd_seq_applied || 0) >= pendingSwitch.seq) {
     setBusy(false);
@@ -433,6 +462,7 @@ function startStatePolling() {
     catch (error) {
       if (intentionalDisconnect || pausedForHidden) return;
       const message = "Worker unavailable: " + formatError(error);
+      setWorkerHealth("error", "Worker unavailable");
       if (message !== lastPollErrorText) { setStatus(message, true); lastPollErrorText = message; }
     }
   }, STATE_POLL_INTERVAL_MS);
@@ -440,12 +470,17 @@ function startStatePolling() {
 
 async function refreshStateNow() {
   try { return await fetchState(); }
-  catch (error) { setStatus("State fetch failed: " + formatError(error), true); return null; }
+  catch (error) {
+    setWorkerHealth("error", "Worker unavailable");
+    setStatus("State fetch failed: " + formatError(error), true);
+    return null;
+  }
 }
 
 async function beginMjpegOnly(messageText) {
   const generation = ++connectGeneration;
   clearReconnectTimer(); closePeer(); cancelMjpeg(); hideMedia();
+  setWorkerHealth("connecting", "Connecting with MJPEG");
   setStreamMode("connecting", "Worker reports MJPEG-only streaming.");
   setPlaceholder(messageText || "Connecting to MJPEG stream...", true);
   setStatus(messageText || "Connecting to MJPEG stream...");
@@ -453,11 +488,13 @@ async function beginMjpegOnly(messageText) {
   if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) return;
   if (loaded) {
     showFallback(); setPlaceholder("", false);
+    setWorkerHealth("warning", "Worker online (MJPEG only)");
     setStreamMode("mjpeg", "Worker is running in MJPEG-only mode.");
     setStatus("Connected using MJPEG."); setCodecLabel("MJPEG"); setBitrateLabel("-");
     return;
   }
   cancelMjpeg(); hideMedia();
+  setWorkerHealth("error", "MJPEG stream unavailable");
   setStreamMode("error", "MJPEG stream not reachable.");
   setPlaceholder("Stream unavailable. MJPEG endpoint not reachable.", true);
   setStatus("Could not open MJPEG stream.", true);
@@ -493,6 +530,7 @@ async function openPeerConnection(generation) {
     const stream = event.streams && event.streams[0];
     if (stream) {
       videoEl.srcObject = stream; showVideo(); setPlaceholder("", false);
+      setWorkerHealth("online", "Receiving WebRTC video");
       setStreamMode("webrtc", "Live video is streaming over WebRTC.");
       setStatus("Receiving WebRTC video."); refreshWebRtcMediaLabels().catch(() => {});
     }
@@ -500,10 +538,16 @@ async function openPeerConnection(generation) {
   peer.onconnectionstatechange = () => {
     if (generation !== connectGeneration || activePeer !== peer) return;
     const state = peer.connectionState;
-    if (state === "connected") { webrtcConsecutiveFailures = 0; setStatus("WebRTC connected. Waiting for video..."); return; }
+    if (state === "connected") {
+      webrtcConsecutiveFailures = 0;
+      setWorkerHealth("online", "Worker online");
+      setStatus("WebRTC connected. Waiting for video...");
+      return;
+    }
     if (state === "failed" || state === "disconnected" || state === "closed") {
       if (intentionalDisconnect || pausedForHidden || document.hidden) return;
       webrtcConsecutiveFailures++;
+      setWorkerHealth("warning", "WebRTC interrupted");
       if (webrtcConsecutiveFailures > 1) { closePeer(); tryMjpegFallback(generation, new Error("WebRTC " + state + " after retry.")); return; }
       scheduleReconnect(new Error("WebRTC connection " + state + "."));
     }
@@ -521,6 +565,7 @@ async function openPeerConnection(generation) {
   if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) throw new Error("Connection cancelled.");
   await peer.setRemoteDescription(answer);
   if (!receivedVideoTrack && generation === connectGeneration && activePeer === peer) {
+    setWorkerHealth("connecting", "Waiting for video");
     setStreamMode("connecting", "WebRTC negotiated. Waiting for video frames...");
     setStatus("WebRTC negotiated. Waiting for video...");
   }
@@ -530,6 +575,7 @@ function scheduleReconnect(error) {
   if (reconnectTimer || intentionalDisconnect || pausedForHidden || document.hidden) return;
   const detail = formatError(error);
   closePeer(); cancelMjpeg();
+  setWorkerHealth("connecting", "Retrying WebRTC");
   setStreamMode("connecting", "Retrying WebRTC once before MJPEG fallback.");
   setPlaceholder("WebRTC disconnected. Retrying...", true);
   setStatus("WebRTC disconnected: " + detail + " Retrying...", true);
@@ -560,10 +606,12 @@ function tryMjpegStream(url, generation) {
 async function tryMjpegFallback(generation, error) {
   if (currentCapabilities && currentCapabilities.mjpegAvailable === false) {
     hideMedia(); setStreamMode("error", "WebRTC failed and worker did not advertise MJPEG.");
+    setWorkerHealth("error", "No MJPEG fallback");
     setPlaceholder("Stream unavailable. No MJPEG fallback.", true);
     setStatus("WebRTC failed: " + formatError(error), true); return;
   }
   const detail = formatError(error);
+  setWorkerHealth("connecting", "Trying MJPEG fallback");
   setStreamMode("connecting", "Trying MJPEG fallback...");
   setPlaceholder("WebRTC unavailable. Trying MJPEG...", true);
   setStatus("WebRTC failed: " + detail + " Trying MJPEG...", true);
@@ -571,10 +619,12 @@ async function tryMjpegFallback(generation, error) {
   if (generation !== connectGeneration || intentionalDisconnect || pausedForHidden) return;
   if (loaded) {
     showFallback(); setPlaceholder("", false);
+    setWorkerHealth("warning", "Using MJPEG fallback");
     setStreamMode("mjpeg", "Using MJPEG fallback."); setStatus("Using MJPEG fallback.", true);
     setCodecLabel("MJPEG"); setBitrateLabel("-"); return;
   }
   cancelMjpeg(); hideMedia();
+  setWorkerHealth("error", "Stream unavailable");
   setStreamMode("error", "WebRTC failed and MJPEG fallback unavailable.");
   setPlaceholder("Stream unavailable.", true); setStatus("WebRTC failed: " + detail, true);
 }
@@ -583,6 +633,7 @@ async function beginWebRtc(allowRetry, messageText) {
   if (!currentTarget) currentTarget = resolveTargetBase();
   const generation = ++connectGeneration;
   clearReconnectTimer(); closePeer(); cancelMjpeg(); hideMedia();
+  setWorkerHealth("connecting", "Negotiating WebRTC");
   setStreamMode("connecting", "Negotiating video over WebRTC...");
   setPlaceholder(messageText || "Starting WebRTC...", true);
   setStatus(messageText || "Starting WebRTC...");
@@ -593,6 +644,7 @@ async function beginWebRtc(allowRetry, messageText) {
     if (allowRetry && !document.hidden && shouldRetryWebRtc(error)) { scheduleReconnect(error); return; }
     if (shouldSkipMjpegFallback(error)) {
       const detail = formatError(error);
+      setWorkerHealth("error", "Worker connection failed");
       hideMedia(); setStreamMode("error", detail); setPlaceholder("Stream unavailable. " + detail, true);
       setStatus(detail, true); return;
     }
@@ -610,6 +662,7 @@ function disconnectStream(reason = "Disconnected.", isError = false) {
   clearReconnectTimer(); stopStatePolling(); stopCodecPolling();
   connectGeneration += 1; closePeer(); cancelMjpeg(); hideMedia();
   setBusy(false); setStreamMode(isError ? "error" : "idle", isError ? reason : "Disconnected.");
+  setWorkerHealth(isError ? "error" : "neutral", isError ? "Worker connection failed" : "Disconnected");
   setPlaceholder(reason, true); setStatus(reason, isError); resetWebRtcMediaStats();
 }
 
@@ -617,6 +670,7 @@ function pauseStreamForHidden() {
   if (intentionalDisconnect || pausedForHidden) return;
   pausedForHidden = true; clearReconnectTimer(); stopStatePolling(); stopCodecPolling();
   connectGeneration += 1; closePeer(); cancelMjpeg(); hideMedia(); setBusy(false);
+  setWorkerHealth("neutral", "Paused while tab is hidden");
   setStreamMode("idle", "Paused while tab is hidden."); setPlaceholder("Paused while tab is hidden.", true);
   setStatus("Paused while tab is hidden."); resetWebRtcMediaStats();
 }
@@ -629,6 +683,7 @@ async function connect() {
   pendingSwitch = null; lastPollErrorText = "";
   currentCapabilities = { webrtcAvailable: true, mjpegAvailable: true, backend: "" };
   webrtcConsecutiveFailures = 0; setBusy(false); clearReconnectTimer();
+  setWorkerHealth("connecting", "Connecting to worker");
   setConnectionMode(target); startStatePolling(); startCodecPolling();
   await refreshStateNow();
   await beginPreferredStream(true, "Connecting to " + target.display + "...");
@@ -681,7 +736,7 @@ async function captureFrame() {
   }
   if (!overlayBlob || overlayBlob.size === 0) { setStatus("Capture failed: empty frame", true); return; }
 
-  // Fetch raw frame (without KI overlay) for toggle support
+  // Fetch raw frame (without overlay) for toggle support
   let rawBlob = null;
   try {
     const rawResp = await fetch("/api/proxy/frame-raw.jpg", { cache: "no-store" });
@@ -738,9 +793,9 @@ function startRecord() {
   mediaRecorder.onstop = uploadRecording;
   mediaRecorder.start(1000);
   recordStartTime = Date.now();
-  recordBtn.textContent = "⏹ Stop";
-  recordBtn.style.background = "#991b1b";
-  recordTimerEl.style.display = "inline";
+  recordBtn.textContent = "Stop recording";
+  recordBtn.classList.add("danger");
+  recordTimerEl.style.display = "inline-block";
   recordTimerInterval = setInterval(() => {
     const secs = Math.floor((Date.now() - recordStartTime) / 1000);
     const m = Math.floor(secs / 60).toString().padStart(2, "0");
@@ -754,8 +809,8 @@ function stopRecord() {
     mediaRecorder.stop();
   }
   clearInterval(recordTimerInterval);
-  recordBtn.textContent = "⏺ Record";
-  recordBtn.style.background = "";
+  recordBtn.textContent = "Record clip";
+  recordBtn.classList.remove("danger");
   recordTimerEl.style.display = "none";
   recordTimerEl.textContent = "";
 }
@@ -792,6 +847,7 @@ videoEl.addEventListener("loadedmetadata", () => {
   if (intentionalDisconnect || pausedForHidden) return;
   showVideo(); setPlaceholder("", false);
   if (videoEl.srcObject) {
+    setWorkerHealth("online", "Receiving WebRTC video");
     setStreamMode("webrtc", "Live video is streaming over WebRTC.");
     setStatus("Receiving WebRTC video."); refreshWebRtcMediaLabels().catch(() => {});
   }
@@ -800,6 +856,7 @@ videoEl.addEventListener("loadedmetadata", () => {
 fallbackEl.addEventListener("error", () => {
   if (stateStreamModeEl.dataset.mode !== "mjpeg" || intentionalDisconnect || pausedForHidden) return;
   cancelMjpeg(); hideMedia();
+  setWorkerHealth("error", "MJPEG fallback disconnected");
   setStreamMode("error", "MJPEG fallback disconnected.");
   setPlaceholder("MJPEG fallback disconnected.", true);
   setStatus("MJPEG fallback disconnected.", true);
@@ -822,21 +879,26 @@ window.addEventListener("beforeunload", () => {
   closePeer(); cancelMjpeg();
 });
 
-baseInputEl.addEventListener("keydown", event => {
-  if (event.key === "Enter") connect().catch(error => setStatus(formatError(error), true));
-});
+if (baseInputEl) {
+  baseInputEl.addEventListener("keydown", event => {
+    if (event.key === "Enter") connect().catch(error => setStatus(formatError(error), true));
+  });
+}
 
 // ===== Init =====
-if (IS_FILE_PROTOCOL) {
-  if (!baseInputEl.value.trim() || baseInputEl.value.trim() === "/") baseInputEl.value = DEFAULT_DIRECT_BASE;
-  baseInputEl.placeholder = DEFAULT_DIRECT_BASE;
-} else {
-  if (!baseInputEl.value.trim()) baseInputEl.value = "/";
-  baseInputEl.placeholder = "/ or " + DEFAULT_DIRECT_BASE;
+if (baseInputEl) {
+  if (IS_FILE_PROTOCOL) {
+    if (!baseInputEl.value.trim() || baseInputEl.value.trim() === "/") baseInputEl.value = DEFAULT_DIRECT_BASE;
+    baseInputEl.placeholder = DEFAULT_DIRECT_BASE;
+  } else {
+    if (!baseInputEl.value.trim()) baseInputEl.value = "/";
+    baseInputEl.placeholder = "/ or " + DEFAULT_DIRECT_BASE;
+  }
 }
 
 setConnectionMode(IS_FILE_PROTOCOL ? { kind: "direct", display: DEFAULT_DIRECT_BASE } : { kind: "proxy" });
-setStreamMode("idle", "WebRTC first. MJPEG fallback when worker does not expose WebRTC.");
+setStreamMode("idle", "WebRTC first, MJPEG fallback if needed.");
+setWorkerHealth("connecting", "Connecting to worker");
 resetWebRtcMediaStats();
 setPlaceholder(IS_FILE_PROTOCOL ? "Connecting to local worker..." : "Connecting...", true);
 connect().catch(error => setStatus(formatError(error), true));
@@ -877,18 +939,21 @@ async function loadPasskeys() {
     const resp = await fetch('/auth/webauthn/credentials', { cache: 'no-store' });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const keys = await resp.json();
-    if (!keys.length) { el.innerHTML = '<span style="color:var(--muted)">No passkeys registered.</span>'; return; }
+    if (!keys.length) {
+      el.innerHTML = '<span class="small">No passkeys registered yet.</span>';
+      return;
+    }
     let html = '';
     for (const k of keys) {
       const name = String(k.name || 'Passkey').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);">
+      html += `<div class="passkey-item">
         <span>${name}</span>
-        <button data-action="delete-passkey" data-cred-id="${k.id}" data-name="${name}" class="danger" style="padding:2px 8px;font-size:0.8rem;">✕</button>
+        <button data-action="delete-passkey" data-cred-id="${k.id}" data-name="${name}" class="danger admin-inline-button">Delete</button>
       </div>`;
     }
     el.innerHTML = html;
   } catch (err) {
-    el.innerHTML = '<span style="color:var(--danger)">Failed: ' + err.message + '</span>';
+    el.innerHTML = '<span class="small error">Failed: ' + err.message + '</span>';
   }
 }
 

@@ -1,9 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Login – sentinelCam{% endblock %}
+{% block title %}Login - sentinelCam{% endblock %}
 {% block content %}
-<div class="login-container">
-  <div class="panel login-panel">
-    <h1>sentinelCam</h1>
+<div class="login-layout login-layout-compact">
+  <section class="panel login-panel login-panel-compact">
+    <span class="eyebrow">sentinelCam</span>
+    <h1>Welcome back</h1>
+    <p class="panel-intro">Sign in with your password or a passkey.</p>
     <div id="error-msg" class="error-msg" style="display:none"></div>
     <form id="login-form">
       <div class="field">
@@ -14,13 +16,15 @@
         <label for="password">Password</label>
         <input id="password" type="password" name="password" autocomplete="current-password" required />
       </div>
-      <button type="submit" id="login-btn">Login</button>
+      <div class="form-actions">
+        <button type="submit" id="login-btn">Login</button>
+      </div>
     </form>
-    <div id="webauthn-section" style="display:none; margin-top:16px;">
-      <hr style="border-color:var(--border)">
-      <button type="button" id="passkey-btn" class="secondary" style="width:100%">🔑 Sign in with Passkey</button>
+    <div id="webauthn-section" style="display:none">
+      <div class="auth-divider"><span>or</span></div>
+      <button type="button" id="passkey-btn" class="secondary">Sign in with passkey</button>
     </div>
-  </div>
+  </section>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/auth.js"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/auth.js?v=20260320b"></script>
 {% endblock %}
