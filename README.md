@@ -65,6 +65,7 @@ Choose one path:
 What it does:
 
 - runs `docker compose up -d --build web` for the web service
+- starts only the `web` container, not the Docker worker
 - reads `WORKER_TOKEN` from `.env`
 - sets `WEB_ALLOWED_ORIGINS` for local browser access
 - launches the sibling `sentinelCam-worker` repo
@@ -78,6 +79,7 @@ bash ./scripts/start-local-worker.sh
 What it does:
 
 - runs `docker compose up -d --build web` for the web service
+- starts only the `web` container, not the Docker worker
 - starts the worker locally with `--host 0.0.0.0`
 - uses `WORKER_SOURCE` and `WORKER_BIND_HOST` from `.env` when set
 
@@ -91,6 +93,9 @@ This runs the full Linux stack from `docker-compose.yml`.
 
 Notes:
 
+- starts both `web` and `worker`
+- the worker uses `WORKER_SOURCE=0` by default
+- the worker maps `${WORKER_VIDEO_DEVICE:-/dev/video0}` into the container
 - set `WORKER_VIDEO_DEVICE` in `.env` if your camera is not `/dev/video0`
 - set `WORKER_SOURCE` in `.env` for RTSP or other non-camera sources
 - use `WORKER_VIDEO_DEVICE=/dev/null` for remote-stream-only hosts
@@ -115,11 +120,15 @@ Use these if you do not want the helper scripts.
 docker compose up -d --build
 ```
 
+This starts the full Docker stack from [`docker-compose.yml`](./docker-compose.yml): `web` and `worker`.
+
 For a local worker workflow where only the web service should start:
 
 ```bash
 docker compose up -d --build web
 ```
+
+This starts only `web`. Use it when the worker is already running outside Docker.
 
 ### Windows local worker
 
@@ -151,6 +160,8 @@ If you want a non-default source:
 docker compose up -d --build
 ```
 
+By default this starts the Docker worker with `WORKER_SOURCE=0` and maps `/dev/video0` into the container.
+
 ## Verification
 
 Check the web app:
@@ -176,9 +187,9 @@ Stop the web app:
 docker compose down
 ```
 
-If you started the worker locally, stop it in its own terminal with `Ctrl+C`.
+If you started the full Docker stack, this stops both `web` and `worker`.
 
-If you started the Linux Docker worker manually, include the same override files in the `down` command.
+If you started the worker locally, stop it in its own terminal with `Ctrl+C`.
 
 ## Docker files
 
