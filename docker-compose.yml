@@ -11,11 +11,12 @@ services:
     build: .
     ports:
       - "3000:3000"
+    restart: unless-stopped
     environment:
       WORKER_BASE_URL: ${WORKER_BASE_URL:-http://host.docker.internal:8080}
       WORKER_TOKEN: ${WORKER_TOKEN}
       WEB_PORT: ${WEB_PORT:-3000}
-      PUBLIC: ${SC_PUBLIC:-1}
+      SC_PUBLIC: ${SC_PUBLIC:-1}
       INITIAL_ADMIN_USER: ${ADMIN_USER:-admin}
       INITIAL_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}

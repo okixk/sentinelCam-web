@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import secrets
@@ -33,12 +34,35 @@ def _audit(event: str, **kwargs) -> None:
     AUDIT.info(json.dumps({"event": event, **kwargs, "timestamp": time.time()}))
 
 
-def _set_session_cookies(response: Response, session_id: str, csrf_token: str) -> None:
+def _request_is_secure(request: Request) -> bool:
+    forwarded_proto = (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower()
+    return request.url.scheme == "https" or forwarded_proto == "https"
+
+
+def _request_fingerprint(request: Request) -> str:
+    ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "")[:256]
+    payload = f"{ip}|{user_agent}".encode("utf-8", "ignore")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _webauthn_registration_key(request: Request, user_id: int) -> str:
+    session_id = request.cookies.get("session") or _request_fingerprint(request)
+    return f"reg:{user_id}:{session_id}"
+
+
+def _webauthn_login_key(request: Request, username: str) -> str:
+    return f"auth:{username}:{_request_fingerprint(request)}"
+
+
+def _set_session_cookies(request: Request, response: Response, session_id: str, csrf_token: str) -> None:
+    secure = _request_is_secure(request)
     response.set_cookie(
         "session",
         session_id,
         httponly=True,
         samesite="strict",
+        secure=secure,
         path="/",
         max_age=settings.session_max_age_hours * 3600,
     )
@@ -47,14 +71,17 @@ def _set_session_cookies(response: Response, session_id: str, csrf_token: str) -
         csrf_token,
         httponly=False,
         samesite="strict",
+        secure=secure,
         path="/",
         max_age=settings.session_max_age_hours * 3600,
     )
 
 
-def _clear_session_cookies(response: Response) -> None:
-    response.delete_cookie("session", path="/")
-    response.delete_cookie("csrf_token", path="/")
+def _clear_session_cookies(request: Request, response: Response) -> None:
+    secure = _request_is_secure(request)
+    request.state.skip_session_cookie_refresh = True
+    response.delete_cookie("session", path="/", samesite="strict", secure=secure)
+    response.delete_cookie("csrf_token", path="/", samesite="strict", secure=secure)
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -62,7 +89,7 @@ async def login_page(request: Request):
     user = await _get_session_user(request)
     if user:
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html", {"request": request})
 
 
 class LoginRequest(BaseModel):
@@ -159,7 +186,7 @@ async def login(request: Request, body: LoginRequest):
     _audit("auth.login.success", username=body.username, ip=ip)
 
     response = JSONResponse({"ok": True, "redirect": "/"})
-    _set_session_cookies(response, session_id, csrf_token)
+    _set_session_cookies(request, response, session_id, csrf_token)
     return response
 
 
@@ -172,7 +199,7 @@ async def logout(request: Request, user: User = Depends(get_current_user), _csrf
             await conn.commit()
     _audit("auth.logout", username=user.username, ip=request.client.host if request.client else "unknown")
     response = RedirectResponse("/auth/login", status_code=302)
-    _clear_session_cookies(response)
+    _clear_session_cookies(request, response)
     return response
 
 
@@ -199,7 +226,7 @@ async def webauthn_register_begin(
     challenge_b64 = options.get("challenge", "")
     from webauthn.helpers import base64url_to_bytes
     challenge_bytes = base64url_to_bytes(challenge_b64) if isinstance(challenge_b64, str) else challenge_b64
-    store_challenge(f"reg_{user.id}", challenge_bytes)
+    store_challenge(_webauthn_registration_key(request, user.id), challenge_bytes)
 
     return JSONResponse(options)
 
@@ -213,7 +240,7 @@ async def webauthn_register_complete(
     from app.auth.webauthn import verify_registration_response, pop_challenge
     body = await request.json()
 
-    challenge = pop_challenge(f"reg_{user.id}")
+    challenge = pop_challenge(_webauthn_registration_key(request, user.id))
     if not challenge:
         raise HTTPException(400, "No pending registration challenge")
 
@@ -270,7 +297,7 @@ async def webauthn_login_begin(request: Request):
     from webauthn.helpers import base64url_to_bytes
     challenge_b64 = options.get("challenge", "")
     challenge_bytes = base64url_to_bytes(challenge_b64) if isinstance(challenge_b64, str) else challenge_b64
-    store_challenge(f"auth_{username}", challenge_bytes)
+    store_challenge(_webauthn_login_key(request, username), challenge_bytes)
 
     return JSONResponse(options)
 
@@ -282,7 +309,10 @@ async def webauthn_login_complete(request: Request):
     username = body.get("username", "").strip()
     credential_response = body.get("credential", {})
 
-    challenge = pop_challenge(f"auth_{username}")
+    if not username:
+        raise HTTPException(400, "username required")
+
+    challenge = pop_challenge(_webauthn_login_key(request, username))
     if not challenge:
         raise HTTPException(400, "No pending authentication challenge")
 
@@ -350,7 +380,7 @@ async def webauthn_login_complete(request: Request):
     _audit("auth.webauthn.login", username=username, ip=ip)
 
     response = JSONResponse({"ok": True, "redirect": "/"})
-    _set_session_cookies(response, session_id, csrf_token)
+    _set_session_cookies(request, response, session_id, csrf_token)
     return response
 
 

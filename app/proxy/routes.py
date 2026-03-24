@@ -7,10 +7,10 @@ import time
 from typing import AsyncIterator
 
 import httpx
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.auth.dependencies import User, get_current_user, check_csrf
+from app.auth.dependencies import User, check_csrf, get_current_user, require_admin
 from app.config import settings
 
 log = logging.getLogger("sentinelCam.proxy")
@@ -24,12 +24,28 @@ _capability_cache: dict = {
 _capability_cache_lock = asyncio.Lock()
 
 HOP_BY_HOP_HEADERS = {
-    "connection", "keep-alive", "content-length", "proxy-authenticate",
-    "proxy-authorization", "server", "date", "te", "trailers",
-    "transfer-encoding", "upgrade",
+    "connection",
+    "keep-alive",
+    "content-length",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "server",
+    "date",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
 }
 
 SHUTDOWN_COMMANDS = {"q", "quit", "exit", "stop"}
+_worker_proxy_status: dict[str, object] = {
+    "last_attempt_at": None,
+    "last_ok_at": None,
+    "last_error_at": None,
+    "last_error": "",
+    "last_path": "",
+    "last_status_code": None,
+}
 
 
 def _worker_url(path: str) -> str:
@@ -44,7 +60,19 @@ def _worker_headers() -> dict[str, str]:
     return headers
 
 
+def _worker_client(request: Request) -> httpx.AsyncClient:
+    client = getattr(request.app.state, "worker_http_client", None)
+    if client is None:
+        raise HTTPException(status_code=503, detail="worker proxy client not initialized")
+    return client
+
+
 def _proxy_error_response(path: str, error: Exception, *, detail: str = "proxy request failed") -> JSONResponse:
+    _worker_proxy_status["last_attempt_at"] = time.time()
+    _worker_proxy_status["last_error_at"] = time.time()
+    _worker_proxy_status["last_error"] = f"{detail}: {error}"
+    _worker_proxy_status["last_path"] = path
+    _worker_proxy_status["last_status_code"] = 502
     return JSONResponse(
         {
             "ok": False,
@@ -55,7 +83,7 @@ def _proxy_error_response(path: str, error: Exception, *, detail: str = "proxy r
     )
 
 
-async def _probe_worker_capabilities() -> dict:
+async def _probe_worker_capabilities(request: Request) -> dict:
     global _capability_cache
     now = time.time()
     async with _capability_cache_lock:
@@ -66,13 +94,12 @@ async def _probe_worker_capabilities() -> dict:
 
     capabilities = {"webrtc_available": False, "mjpeg_available": True, "stream_backend": "mjpeg"}
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(_worker_url("/api/webrtc/offer"), headers=_worker_headers())
-            if 200 <= resp.status_code < 300:
-                capabilities["webrtc_available"] = True
-                capabilities["stream_backend"] = "webrtc"
-            elif resp.status_code not in (404,):
-                capabilities["probe_status"] = resp.status_code
+        resp = await _worker_client(request).get(_worker_url("/api/webrtc/offer"), headers=_worker_headers())
+        if 200 <= resp.status_code < 300:
+            capabilities["webrtc_available"] = True
+            capabilities["stream_backend"] = "webrtc"
+        elif resp.status_code not in (404,):
+            capabilities["probe_status"] = resp.status_code
     except Exception:
         pass
 
@@ -82,7 +109,13 @@ async def _probe_worker_capabilities() -> dict:
     return capabilities
 
 
-async def _augment_state(body: bytes) -> bytes:
+async def _augment_state(request: Request, body: bytes) -> bytes:
+    if (
+        b'"webrtc_available"' in body
+        and b'"mjpeg_available"' in body
+        and b'"stream_backend"' in body
+    ):
+        return body
     try:
         payload = json.loads(body.decode("utf-8") or "{}")
     except Exception:
@@ -91,7 +124,7 @@ async def _augment_state(body: bytes) -> bytes:
         return body
     if all(k in payload for k in ("webrtc_available", "mjpeg_available", "stream_backend")):
         return body
-    payload.update(await _probe_worker_capabilities())
+    payload.update(await _probe_worker_capabilities(request))
     return json.dumps(payload).encode("utf-8")
 
 
@@ -120,55 +153,119 @@ def _filter_headers(headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP_HEADERS}
 
 
+def _mark_worker_success(path: str, status_code: int) -> None:
+    _worker_proxy_status["last_attempt_at"] = time.time()
+    _worker_proxy_status["last_ok_at"] = time.time()
+    _worker_proxy_status["last_path"] = path
+    _worker_proxy_status["last_status_code"] = status_code
+    _worker_proxy_status["last_error"] = ""
+
+
+def get_worker_proxy_status() -> dict[str, object]:
+    return dict(_worker_proxy_status)
+
+
+def reset_worker_proxy_status() -> None:
+    _worker_proxy_status.update(
+        {
+            "last_attempt_at": None,
+            "last_ok_at": None,
+            "last_error_at": None,
+            "last_error": "",
+            "last_path": "",
+            "last_status_code": None,
+        }
+    )
+
+
 @router.get("/api/state")
-async def proxy_state(user: User = Depends(get_current_user)):
+async def proxy_state(request: Request, user: User = Depends(get_current_user)):
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(_worker_url("/api/state"), headers=_worker_headers())
-            body = await _augment_state(resp.content)
-            return Response(
-                content=body,
-                status_code=resp.status_code,
-                headers=_filter_headers(resp.headers),
-                media_type="application/json",
-            )
+        resp = await _worker_client(request).get(_worker_url("/api/state"), headers=_worker_headers())
+        _mark_worker_success("/api/state", resp.status_code)
+        body = await _augment_state(request, resp.content)
+        return Response(
+            content=body,
+            status_code=resp.status_code,
+            headers=_filter_headers(resp.headers),
+            media_type="application/json",
+        )
     except httpx.RequestError as e:
         return _proxy_error_response("/api/state", e)
 
 
 @router.post("/api/cmd")
-async def proxy_cmd(request: Request, user: User = Depends(get_current_user), _csrf=Depends(check_csrf)):
+async def proxy_cmd(request: Request, user: User = Depends(require_admin), _csrf=Depends(check_csrf)):
     body = await request.body()
     content_type = request.headers.get("content-type", "")
     if _wants_shutdown(body, content_type):
-        log.info("Quit command forwarded to worker – proxy stays online")
+        log.info("Quit command forwarded to worker; proxy stays online")
     try:
         headers = _worker_headers()
         if content_type:
             headers["Content-Type"] = content_type
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(_worker_url("/api/cmd"), content=body, headers=headers)
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=_filter_headers(resp.headers),
-            )
+        resp = await _worker_client(request).post(_worker_url("/api/cmd"), content=body, headers=headers)
+        _mark_worker_success("/api/cmd", resp.status_code)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=_filter_headers(resp.headers),
+        )
     except httpx.RequestError as e:
         return _proxy_error_response("/api/cmd", e)
 
 
-@router.get("/stream.mjpg")
-async def proxy_mjpeg(request: Request, user: User = Depends(get_current_user)):
+async def _proxy_streaming_mjpeg(request: Request, worker_path: str) -> Response:
+    try:
+        client = _worker_client(request)
+        upstream = await client.send(
+            client.build_request("GET", _worker_url(worker_path), headers=_worker_headers()),
+            stream=True,
+        )
+        _mark_worker_success(worker_path, upstream.status_code)
+    except httpx.RequestError as e:
+        return _proxy_error_response(worker_path, e)
+
+    if upstream.status_code >= 400:
+        try:
+            body = await upstream.aread()
+            return Response(
+                content=body,
+                status_code=upstream.status_code,
+                headers=_filter_headers(upstream.headers),
+                media_type=upstream.headers.get("content-type"),
+            )
+        finally:
+            await upstream.aclose()
+
     async def stream_chunks() -> AsyncIterator[bytes]:
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("GET", _worker_url("/stream.mjpg"), headers=_worker_headers()) as resp:
-                    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
-                        yield chunk
-        except Exception:
-            return
+            async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                yield chunk
+        except Exception as exc:
+            log.warning("Worker MJPEG stream ended: %s", exc)
+        finally:
+            await upstream.aclose()
 
-    return StreamingResponse(stream_chunks(), media_type="multipart/x-mixed-replace; boundary=frame")
+    headers = _filter_headers(upstream.headers)
+    headers["Cache-Control"] = "no-store"
+    headers["X-Accel-Buffering"] = "no"
+    return StreamingResponse(
+        stream_chunks(),
+        status_code=upstream.status_code,
+        headers=headers,
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+@router.get("/stream.mjpg")
+async def proxy_mjpeg(request: Request, user: User = Depends(get_current_user)):
+    return await _proxy_streaming_mjpeg(request, "/stream.mjpg")
+
+
+@router.get("/stream-raw.mjpg")
+async def proxy_raw_mjpeg(request: Request, user: User = Depends(get_current_user)):
+    return await _proxy_streaming_mjpeg(request, "/stream-raw.mjpg")
 
 
 @router.post("/api/webrtc/offer")
@@ -179,55 +276,55 @@ async def proxy_webrtc_offer_post(request: Request, user: User = Depends(get_cur
         headers = _worker_headers()
         if content_type:
             headers["Content-Type"] = content_type
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(_worker_url("/api/webrtc/offer"), content=body, headers=headers)
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=_filter_headers(resp.headers),
-            )
+        resp = await _worker_client(request).post(_worker_url("/api/webrtc/offer"), content=body, headers=headers)
+        _mark_worker_success("/api/webrtc/offer", resp.status_code)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=_filter_headers(resp.headers),
+        )
     except httpx.RequestError as e:
         return _proxy_error_response("/api/webrtc/offer", e)
 
 
 @router.get("/api/webrtc/offer")
-async def proxy_webrtc_offer_get(user: User = Depends(get_current_user)):
+async def proxy_webrtc_offer_get(request: Request, user: User = Depends(get_current_user)):
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(_worker_url("/api/webrtc/offer"), headers=_worker_headers())
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=_filter_headers(resp.headers),
-            )
+        resp = await _worker_client(request).get(_worker_url("/api/webrtc/offer"), headers=_worker_headers())
+        _mark_worker_success("/api/webrtc/offer", resp.status_code)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=_filter_headers(resp.headers),
+        )
     except httpx.RequestError as e:
         return _proxy_error_response("/api/webrtc/offer", e)
 
 
 @router.get("/health")
-async def health():
+async def health(request: Request):
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(_worker_url("/health"), headers=_worker_headers())
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=_filter_headers(resp.headers),
-            )
+        resp = await _worker_client(request).get(_worker_url("/health"), headers=_worker_headers())
+        _mark_worker_success("/health", resp.status_code)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=_filter_headers(resp.headers),
+        )
     except httpx.RequestError as e:
         return _proxy_error_response("/health", e, detail="worker unreachable")
 
 
 @router.get("/api/proxy/frame-raw.jpg")
-async def proxy_frame_raw(user: User = Depends(get_current_user)):
+async def proxy_frame_raw(request: Request, user: User = Depends(get_current_user)):
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(_worker_url("/frame-raw.jpg"), headers=_worker_headers())
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=_filter_headers(resp.headers),
-                media_type=resp.headers.get("content-type", "image/jpeg"),
-            )
+        resp = await _worker_client(request).get(_worker_url("/frame-raw.jpg"), headers=_worker_headers())
+        _mark_worker_success("/frame-raw.jpg", resp.status_code)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=_filter_headers(resp.headers),
+            media_type=resp.headers.get("content-type", "image/jpeg"),
+        )
     except httpx.RequestError as e:
         return _proxy_error_response("/frame-raw.jpg", e)

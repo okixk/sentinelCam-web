@@ -47,13 +47,16 @@ async def _get_session_user(request: Request) -> Optional[User]:
             await conn.commit()
             return None
 
-        # Sliding window: extend session
-        new_expires = now + settings.session_max_age_hours * 3600
-        await conn.execute(
-            "UPDATE sessions SET expires_at = ? WHERE id = ?",
-            (new_expires, session_id),
-        )
-        await conn.commit()
+        # Sliding window with a refresh threshold to avoid a DB write on every request.
+        refresh_window = max(300, int(settings.session_max_age_hours * 3600 * 0.25))
+        if (row["expires_at"] - now) < refresh_window:
+            new_expires = now + settings.session_max_age_hours * 3600
+            await conn.execute(
+                "UPDATE sessions SET expires_at = ? WHERE id = ?",
+                (new_expires, session_id),
+            )
+            await conn.commit()
+            request.state.session_cookie_refresh = True
 
         return User({
             "id": row["uid"],

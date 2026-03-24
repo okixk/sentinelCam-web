@@ -5,13 +5,13 @@
   <section class="page-hero">
     <div class="page-title-group">
       <h1>Gallery</h1>
-      <p class="page-lead">Saved images and clips.</p>
     </div>
   </section>
 
   <section class="panel gallery-controls">
     <div class="filter-bar">
       <div class="filter-inputs">
+        <input id="search-filter" type="search" placeholder="Search by id, owner, type, filename" autocomplete="off" />
         <select id="type-filter">
           <option value="">All media</option>
           <option value="image">Images</option>
@@ -22,11 +22,20 @@
           <option value="oldest">Oldest first</option>
         </select>
       </div>
+      <div class="gallery-toolbar-actions">
+        <button id="refresh-gallery" type="button" class="secondary">Refresh</button>
+      </div>
     </div>
+    <div class="gallery-preset-row">
+      <button type="button" class="secondary" data-preset="shared">Only shared</button>
+      <button type="button" class="secondary" data-preset="mine">Only mine</button>
+      <button type="button" class="secondary" data-preset="videos">Only videos</button>
+    </div>
+    <div id="gallery-summary" class="gallery-summary">Loading...</div>
   </section>
 
   <div id="gallery-grid" class="gallery-grid"></div>
   <div id="pagination" class="pagination"></div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js?v=20260320b"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js?v=20260323c"></script>
 {% endblock %}

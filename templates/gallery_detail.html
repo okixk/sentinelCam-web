@@ -1,18 +1,31 @@
 {% extends "base.html" %}
-{% block title %}Recording – sentinelCam{% endblock %}
+{% block title %}Recording - sentinelCam{% endblock %}
 {% block content %}
 <div class="page">
   {% set rec = recording %}
+  {% set back_href = '/gallery' + ('?' + back_query if back_query else '') %}
+  {% set detail_suffix = '?' + detail_query if detail_query else '' %}
   <section class="page-hero">
     <div class="page-title-group">
-      <a href="/gallery" class="back-link">Back to gallery</a>
+      <a href="{{ back_href }}" class="back-link">Back to gallery</a>
       <h1>{{ 'Image' if rec.type == 'image' else 'Video' }} #{{ rec.id }}</h1>
-      <p class="page-lead">Saved by <strong>{{ rec.username }}</strong>.</p>
     </div>
     <div class="hero-side">
-      <div class="status-badge" data-state="{{ 'online' if rec.shared else 'neutral' }}">
+      <div id="share-status-badge" class="status-badge" data-state="{{ 'online' if rec.shared else 'neutral' }}">
         <span class="status-dot"></span>
-        <span>{{ 'Shared' if rec.shared else 'Private' }}</span>
+        <span id="share-status-text">{{ 'Shared' if rec.shared else 'Private' }}</span>
+      </div>
+      <div class="detail-nav-row">
+        {% if prev_id %}
+        <a class="button-like secondary" href="/gallery/{{ prev_id }}{{ detail_suffix }}">Prev</a>
+        {% else %}
+        <button class="secondary" disabled>Prev</button>
+        {% endif %}
+        {% if next_id %}
+        <a class="button-like secondary" href="/gallery/{{ next_id }}{{ detail_suffix }}">Next</a>
+        {% else %}
+        <button class="secondary" disabled>Next</button>
+        {% endif %}
       </div>
     </div>
   </section>
@@ -23,23 +36,63 @@
         <div>
           <h2>Preview</h2>
         </div>
-        {% if rec.raw_filename %}
-        <button id="overlay-toggle" class="secondary">Overlay on</button>
-        {% else %}
-        <button disabled class="secondary" title="Raw version not available">Raw unavailable</button>
-        {% endif %}
+        <div class="detail-view-controls">
+          <button id="mode-overlay" class="secondary">Overlay</button>
+          {% if rec.raw_filename %}
+          <button id="mode-raw" class="secondary">Raw</button>
+          <button id="mode-compare" class="secondary">Compare</button>
+          {% endif %}
+        </div>
       </div>
 
-      <div class="media-frame">
-        {% if rec.type == 'image' %}
-        <img id="main-media" src="/api/recordings/{{ rec.id }}/file" alt="Recording preview" />
-        {% else %}
-        <video controls src="/api/recordings/{{ rec.id }}/file"></video>
-        {% endif %}
+      <div class="detail-copy-row">
+        <div class="detail-copy-link" id="copy-target" hidden>{{ request.url }}</div>
+        <button id="copy-link-btn" class="secondary" type="button">Copy link</button>
       </div>
+
+      {% if rec.type == 'image' %}
+      <div id="image-single-view" class="media-frame detail-single-media">
+        <img id="main-media" src="/api/recordings/{{ rec.id }}/file" alt="Recording preview" />
+      </div>
+      {% if rec.raw_filename %}
+      <div id="image-compare-view" class="media-frame compare-stack" hidden>
+        <div class="compare-stage" id="compare-stage">
+          <img src="/api/recordings/{{ rec.id }}/file?variant=raw" alt="Raw image" class="compare-base" />
+          <div class="compare-overlay-wrap" id="compare-overlay-wrap">
+            <img src="/api/recordings/{{ rec.id }}/file" alt="Overlay image" class="compare-overlay" />
+          </div>
+          <div class="compare-divider" id="compare-divider"></div>
+        </div>
+        <label class="compare-slider-wrap">
+          <span>Raw</span>
+          <input id="compare-slider" type="range" min="0" max="100" value="50" />
+          <span>Overlay</span>
+        </label>
+      </div>
+      {% endif %}
+      {% else %}
+      <div id="video-single-view" class="media-frame detail-single-media">
+        <video id="single-video" controls playsinline preload="metadata" src="/api/recordings/{{ rec.id }}/file"></video>
+      </div>
+      {% if rec.raw_filename %}
+      <div id="video-compare-view" class="video-compare-grid" hidden>
+        <div class="media-frame video-compare-panel">
+          <div class="video-compare-label">Overlay</div>
+          <video id="overlay-video" controls playsinline muted preload="metadata" src="/api/recordings/{{ rec.id }}/file"></video>
+        </div>
+        <div class="media-frame video-compare-panel">
+          <div class="video-compare-label">Raw</div>
+          <video id="raw-video" controls playsinline preload="metadata" src="/api/recordings/{{ rec.id }}/file?variant=raw"></video>
+        </div>
+      </div>
+      {% endif %}
+      {% endif %}
 
       <div class="row detail-actions">
-        <a href="/api/recordings/{{ rec.id }}/file" download class="button-like">Download</a>
+        <a href="/api/recordings/{{ rec.id }}/file" download class="button-like">Download overlay</a>
+        {% if rec.raw_filename %}
+        <a href="/api/recordings/{{ rec.id }}/file?variant=raw" download class="button-like secondary">Download raw</a>
+        {% endif %}
         {% if rec.user_id == user.id %}
         <button id="share-btn" class="secondary">{{ 'Shared' if rec.shared else 'Private' }}</button>
         {% endif %}
@@ -87,68 +140,325 @@
           <dd>{{ 'Available' if rec.raw_filename else 'Unavailable' }}</dd>
         </div>
       </dl>
+      <section class="same-hour-section">
+        <div class="panel-header">
+          <div>
+            <h2>Same hour activity</h2>
+            <p class="small">{{ same_hour_label }} to {{ same_hour_end_label }}</p>
+          </div>
+        </div>
+        {% if same_hour_items %}
+        <div class="same-hour-list">
+          {% for item in same_hour_items %}
+          <a class="same-hour-item" href="/gallery/{{ item.id }}{{ detail_suffix }}">
+            <span class="same-hour-time">{{ item.time_label }}</span>
+            <span class="same-hour-main">
+              <strong>{{ item.type_label }} #{{ item.id }}</strong>
+              <span>{{ item.username }} · {{ item.share_label }}</span>
+            </span>
+          </a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="small">No other recordings in this hour.</p>
+        {% endif %}
+      </section>
     </aside>
   </div>
 </div>
 <script nonce="{{ request.state.csp_nonce }}">
   const recId = {{ rec.id }};
+  const backHref = {{ back_href | tojson }};
+  const isImage = {{ 'true' if rec.type == 'image' else 'false' }};
   const hasRaw = {{ 'true' if rec.raw_filename else 'false' }};
-  let showingOverlay = true;
+  let currentMode = 'overlay';
   let isShared = {{ 'true' if rec.shared else 'false' }};
+  let syncLock = false;
+  const appUI = window.AppUI || {};
+  const toast = typeof appUI.toast === 'function' ? appUI.toast : () => null;
+  const confirmDialog = typeof appUI.confirm === 'function'
+    ? appUI.confirm
+    : async () => false;
 
-  function toggleOverlay() {
-    if (!hasRaw) return;
-    showingOverlay = !showingOverlay;
-    const img = document.getElementById('main-media');
-    if (img) {
-      img.src = showingOverlay
-        ? `/api/recordings/${recId}/file`
-        : `/api/recordings/${recId}/file?variant=raw`;
+  function getCsrf() {
+    return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
+  }
+
+  function updateShareUi(shared) {
+    isShared = !!shared;
+    const shareBtn = document.getElementById('share-btn');
+    if (shareBtn) shareBtn.textContent = isShared ? 'Shared' : 'Private';
+    const badge = document.getElementById('share-status-badge');
+    const badgeText = document.getElementById('share-status-text');
+    if (badge) badge.dataset.state = isShared ? 'online' : 'neutral';
+    if (badgeText) badgeText.textContent = isShared ? 'Shared' : 'Private';
+  }
+
+  function setActiveModeButton(mode) {
+    ['overlay', 'raw', 'compare'].forEach((name) => {
+      const btn = document.getElementById('mode-' + name);
+      if (btn) btn.classList.toggle('is-active', name === mode);
+    });
+  }
+
+  function getRecordingSrc(mode) {
+    return mode === 'raw'
+      ? `/api/recordings/${recId}/file?variant=raw`
+      : `/api/recordings/${recId}/file`;
+  }
+
+  function captureVideoState(video) {
+    if (!video) return null;
+    return {
+      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+      paused: !!video.paused,
+      playbackRate: Number.isFinite(video.playbackRate) && video.playbackRate > 0 ? video.playbackRate : 1,
+      volume: Number.isFinite(video.volume) ? video.volume : 1,
+      muted: !!video.muted,
+    };
+  }
+
+  function restoreVideoState(video, state, options = {}) {
+    if (!video || !state) return;
+    const apply = () => {
+      try {
+        if (Number.isFinite(state.currentTime) && state.currentTime >= 0) {
+          video.currentTime = state.currentTime;
+        }
+      } catch (_) {
+        // Some browsers reject seeks before metadata is fully ready.
+      }
+      try {
+        video.playbackRate = state.playbackRate || 1;
+      } catch (_) {
+        // Ignore unsupported playback rate changes.
+      }
+      if (!options.preserveMuted) {
+        video.muted = !!state.muted;
+        if (Number.isFinite(state.volume)) video.volume = state.volume;
+      }
+      if (state.paused) {
+        video.pause();
+      } else {
+        video.play().catch(() => {});
+      }
+    };
+
+    if (video.readyState >= 1) {
+      apply();
+      return;
     }
-    document.getElementById('overlay-toggle').textContent =
-      'Overlay ' + (showingOverlay ? 'on' : 'off');
+
+    const onReady = () => {
+      video.removeEventListener('loadedmetadata', onReady);
+      apply();
+    };
+    video.addEventListener('loadedmetadata', onReady, { once: true });
+  }
+
+  function setVideoSource(video, src, state, options = {}) {
+    if (!video) return;
+    const nextSrc = new URL(src, window.location.origin).toString();
+    const currentSrc = video.currentSrc || video.src || '';
+    if (currentSrc !== nextSrc) {
+      video.src = src;
+      video.load();
+    }
+    restoreVideoState(video, state, options);
+  }
+
+  function getActiveVideoElement(mode = currentMode) {
+    if (mode === 'compare') {
+      return document.getElementById('raw-video') || document.getElementById('overlay-video');
+    }
+    return document.getElementById('single-video');
+  }
+
+  function prepareCompareVideos(state) {
+    const overlayVideo = document.getElementById('overlay-video');
+    const rawVideo = document.getElementById('raw-video');
+    setVideoSource(rawVideo, getRecordingSrc('raw'), state);
+    setVideoSource(overlayVideo, getRecordingSrc('overlay'), state, { preserveMuted: true });
+    if (overlayVideo) {
+      overlayVideo.muted = true;
+      overlayVideo.volume = 0;
+    }
+  }
+
+  function applyMode(mode) {
+    const previousMode = currentMode;
+    const previousVideo = isImage ? null : getActiveVideoElement(previousMode);
+    const previousVideoState = isImage ? null : captureVideoState(previousVideo);
+    currentMode = mode;
+    setActiveModeButton(mode);
+
+    if (isImage) {
+      const singleView = document.getElementById('image-single-view');
+      const compareView = document.getElementById('image-compare-view');
+      const mainMedia = document.getElementById('main-media');
+
+      if (singleView) singleView.hidden = (mode === 'compare');
+      if (compareView) compareView.hidden = (mode !== 'compare');
+      if (mainMedia && mode !== 'compare') {
+        mainMedia.src = mode === 'raw'
+          ? `/api/recordings/${recId}/file?variant=raw`
+          : `/api/recordings/${recId}/file`;
+      }
+    } else {
+      const singleView = document.getElementById('video-single-view');
+      const compareView = document.getElementById('video-compare-view');
+      const singleVideo = document.getElementById('single-video');
+
+      if (singleView) singleView.hidden = (mode === 'compare');
+      if (compareView) compareView.hidden = (mode !== 'compare');
+      if (mode === 'compare') {
+        prepareCompareVideos(previousVideoState);
+      } else if (singleVideo) {
+        setVideoSource(singleVideo, getRecordingSrc(mode), previousVideoState);
+      }
+    }
+
+    const url = new URL(window.location.href);
+    if (mode && mode !== 'overlay') url.searchParams.set('mode', mode);
+    else url.searchParams.delete('mode');
+    history.replaceState({ mode }, '', url.pathname + url.search);
+    const copyTarget = document.getElementById('copy-target');
+    if (copyTarget) copyTarget.textContent = url.toString();
+  }
+
+  function updateImageCompare(value) {
+    const percent = Math.max(0, Math.min(100, Number(value) || 0));
+    const overlayWrap = document.getElementById('compare-overlay-wrap');
+    const divider = document.getElementById('compare-divider');
+    if (overlayWrap) overlayWrap.style.width = percent + '%';
+    if (divider) divider.style.left = percent + '%';
+  }
+
+  function syncVideos(source, target) {
+    if (!source || !target || syncLock) return;
+    syncLock = true;
+    try {
+      if (Math.abs((source.currentTime || 0) - (target.currentTime || 0)) > 0.25) {
+        target.currentTime = source.currentTime || 0;
+      }
+      if (Math.abs((source.playbackRate || 1) - (target.playbackRate || 1)) > 0.01) {
+        target.playbackRate = source.playbackRate || 1;
+      }
+      if (source.paused && !target.paused) target.pause();
+      if (!source.paused && target.paused) target.play().catch(() => {});
+    } catch (_) {
+      // Best-effort sync only.
+    }
+    window.setTimeout(() => { syncLock = false; }, 0);
+  }
+
+  async function copyLink() {
+    const btn = document.getElementById('copy-link-btn');
+    const url = window.location.href;
+    try {
+      if (typeof window.copyText === 'function') {
+        await window.copyText(url);
+      } else if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+      if (btn) btn.textContent = 'Copied';
+      toast('Link copied to clipboard.', { tone: 'success', title: 'Link copied' });
+      window.setTimeout(() => { if (btn) btn.textContent = 'Copy link'; }, 1200);
+    } catch (error) {
+      toast('Copy failed: ' + (error?.message || 'Clipboard unavailable'), { tone: 'error', title: 'Copy failed' });
+    }
   }
 
   async function deleteRecording(id) {
-    if (!confirm('Delete this recording?')) return;
-    const csrf = document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
-    const r = await fetch(`/api/recordings/${id}`, {method:'DELETE', headers:{'X-CSRF-Token':csrf}});
-    if (r.ok) window.location.href = '/gallery';
-    else alert('Delete failed');
+    const confirmed = await confirmDialog({
+      title: 'Delete recording',
+      message: 'Delete this recording permanently? This cannot be undone.',
+      confirmLabel: 'Delete recording',
+      cancelLabel: 'Keep recording',
+      confirmTone: 'danger',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
+    const r = await fetch(`/api/recordings/${id}`, { method: 'DELETE', headers: { 'X-CSRF-Token': getCsrf() } });
+    if (r.ok) {
+      toast('Recording deleted.', { tone: 'success', title: 'Recording removed' });
+      window.location.href = backHref;
+      return;
+    }
+    const payload = await r.json().catch(() => ({}));
+    toast('Delete failed: ' + (payload.detail || payload.error || ('HTTP ' + r.status)), { tone: 'error', title: 'Delete failed' });
   }
 
-  // Format timestamp
-  const el = document.getElementById('created-at');
-  if (el) el.textContent = new Date(parseFloat(el.dataset.ts) * 1000).toLocaleString();
+  const createdAtEl = document.getElementById('created-at');
+  if (createdAtEl) createdAtEl.textContent = new Date(parseFloat(createdAtEl.dataset.ts) * 1000).toLocaleString();
 
-  // Event listeners
-  const overlayBtn = document.getElementById('overlay-toggle');
-  if (overlayBtn) overlayBtn.addEventListener('click', toggleOverlay);
+  const copyBtn = document.getElementById('copy-link-btn');
+  if (copyBtn) copyBtn.addEventListener('click', copyLink);
 
   const deleteBtn = document.getElementById('delete-btn');
   if (deleteBtn) deleteBtn.addEventListener('click', () => deleteRecording(recId));
 
   const shareBtn = document.getElementById('share-btn');
   if (shareBtn) shareBtn.addEventListener('click', async () => {
-    const csrf = document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
     const r = await fetch(`/api/recordings/${recId}/share`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrf() },
       body: JSON.stringify({ shared: !isShared })
     });
     if (r.ok) {
-      isShared = !isShared;
-      shareBtn.textContent = isShared ? 'Shared' : 'Private';
+      const payload = await r.json().catch(() => ({}));
+      updateShareUi(!!payload.shared);
+      toast(payload.shared ? 'Recording is now shared.' : 'Recording is now private.', {
+        tone: 'success',
+        title: 'Sharing updated'
+      });
     } else {
-      alert('Share toggle failed');
+      const payload = await r.json().catch(() => ({}));
+      toast('Share toggle failed: ' + (payload.detail || payload.error || ('HTTP ' + r.status)), {
+        tone: 'error',
+        title: 'Share failed'
+      });
     }
   });
 
+  if (hasRaw) {
+    const overlayBtn = document.getElementById('mode-overlay');
+    const rawBtn = document.getElementById('mode-raw');
+    const compareBtn = document.getElementById('mode-compare');
+    if (overlayBtn) overlayBtn.addEventListener('click', () => applyMode('overlay'));
+    if (rawBtn) rawBtn.addEventListener('click', () => applyMode('raw'));
+    if (compareBtn) compareBtn.addEventListener('click', () => applyMode('compare'));
+
+    const slider = document.getElementById('compare-slider');
+    if (slider) {
+      slider.addEventListener('input', (event) => updateImageCompare(event.target.value));
+      updateImageCompare(slider.value);
+    }
+
+    const overlayVideo = document.getElementById('overlay-video');
+    const rawVideo = document.getElementById('raw-video');
+    if (overlayVideo && rawVideo) {
+      ['loadedmetadata', 'play', 'pause', 'seeking', 'seeked', 'timeupdate', 'ratechange', 'ended'].forEach((name) => {
+        overlayVideo.addEventListener(name, () => syncVideos(overlayVideo, rawVideo));
+        rawVideo.addEventListener(name, () => syncVideos(rawVideo, overlayVideo));
+      });
+    }
+  } else {
+    const overlayBtn = document.getElementById('mode-overlay');
+    if (overlayBtn) overlayBtn.classList.add('is-active');
+  }
+
   const mainMedia = document.getElementById('main-media');
-  if (mainMedia && mainMedia.tagName === 'IMG') {
-    mainMedia.addEventListener('click', function() {
+  if (mainMedia) {
+    mainMedia.addEventListener('click', function () {
       this.classList.toggle('zoomed');
     });
   }
+
+  const requestedMode = new URLSearchParams(window.location.search).get('mode');
+  const initialMode = hasRaw && (requestedMode === 'raw' || requestedMode === 'compare') ? requestedMode : 'overlay';
+  applyMode(initialMode);
 </script>
 {% endblock %}

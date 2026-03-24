@@ -67,14 +67,22 @@ CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id);
 """
 
 
+async def _apply_connection_pragmas(conn: aiosqlite.Connection) -> None:
+    await conn.execute("PRAGMA foreign_keys = ON")
+    await conn.execute("PRAGMA busy_timeout = 5000")
+    await conn.execute("PRAGMA temp_store = MEMORY")
+    await conn.execute("PRAGMA cache_size = -20000")
+    await conn.execute("PRAGMA mmap_size = 268435456")
+    await conn.execute("PRAGMA synchronous = NORMAL")
+
+
 @asynccontextmanager
 async def get_db() -> AsyncIterator[aiosqlite.Connection]:
     db_path = Path(settings.database_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA foreign_keys = ON")
-        await conn.execute("PRAGMA journal_mode = WAL")
+        await _apply_connection_pragmas(conn)
         yield conn
 
 
@@ -83,12 +91,16 @@ async def init_db() -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
+        await _apply_connection_pragmas(conn)
+        await conn.execute("PRAGMA journal_mode = WAL")
+        await conn.execute("PRAGMA journal_size_limit = 67108864")
         await conn.executescript(SCHEMA)
         # Migration: add shared column if missing
         cursor = await conn.execute("PRAGMA table_info(recordings)")
         columns = [row[1] for row in await cursor.fetchall()]
         if "shared" not in columns:
             await conn.execute("ALTER TABLE recordings ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+        await conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
         await conn.commit()
         log.info("Database schema initialized at %s", db_path)
 

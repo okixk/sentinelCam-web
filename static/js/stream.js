@@ -1,10 +1,15 @@
 /* stream.js – WebRTC/MJPEG streaming + capture/record */
 
 const DEFAULT_DIRECT_BASE = "http://127.0.0.1:8080";
-const STATE_POLL_INTERVAL_MS = 500;
+const STATE_POLL_FAST_MS = 350;
+const STATE_POLL_INTERVAL_MS = 1000;
+const STATE_POLL_CONNECTED_MS = 2000;
+const STATE_POLL_MAX_INTERVAL_MS = 8000;
 const ICE_GATHER_TIMEOUT_MS = 4000;
 const WEBRTC_RETRY_DELAY_MS = 2000;
 const MJPEG_PROBE_TIMEOUT_MS = 5000;
+const RAW_RECORD_SETUP_TIMEOUT_MS = 4000;
+const RAW_RECORD_FPS_FALLBACK = 15;
 const MODEL_SWITCH_COMMANDS = new Set(["m", "n", "next", "prev", "previous"]);
 const QUIT_COMMANDS = new Set(["q", "quit", "exit", "stop"]);
 const IS_FILE_PROTOCOL = window.location.protocol === "file:";
@@ -12,6 +17,8 @@ const PAGE_ORIGIN = window.location.origin || "";
 const PAGE_PROTOCOL = window.location.protocol || "";
 
 let statePollTimer = null;
+let statePollToken = 0;
+let statePollFailureCount = 0;
 let codecPollTimer = null;
 let cmdSeq = 0;
 let pendingSwitch = null;
@@ -26,12 +33,20 @@ let pausedForHidden = false;
 let mjpegProbeId = 0;
 let lastInboundVideoSample = null;
 let webrtcConsecutiveFailures = 0;
+let rememberedDirectBase = DEFAULT_DIRECT_BASE;
+let lastConnectionError = "";
+let lastConnectionStatus = "Preparing connection checks.";
 
 // Recording state
 let mediaRecorder = null;
 let recordedChunks = [];
+let rawMediaRecorder = null;
+let rawRecordedChunks = [];
+let rawRecorderCleanup = null;
+let recordMimeType = "video/webm";
 let recordStartTime = null;
 let recordTimerInterval = null;
+let recordStopPromise = null;
 
 const baseInputEl = document.getElementById("base");
 const videoEl = document.getElementById("stream");
@@ -58,6 +73,16 @@ const recordBtn = document.getElementById("record-btn");
 const recordTimerEl = document.getElementById("record-timer");
 const workerHealthBadgeEl = document.getElementById("workerHealthBadge");
 const workerHealthTextEl = document.getElementById("workerHealthText");
+const connectionModeEl = document.getElementById("connection-mode");
+const resolvedTargetEl = document.getElementById("resolvedTarget");
+const troubleSummaryEl = document.getElementById("troubleSummary");
+const techPageOriginEl = document.getElementById("techPageOrigin");
+const techTargetEl = document.getElementById("techTarget");
+const techBackendEl = document.getElementById("techBackend");
+const techWebRtcEl = document.getElementById("techWebRtc");
+const techMjpegEl = document.getElementById("techMjpeg");
+const techLastStatusEl = document.getElementById("techLastStatus");
+const techLastErrorEl = document.getElementById("techLastError");
 
 function getCsrf() {
   return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || '';
@@ -74,6 +99,130 @@ function formatError(error) {
   if (typeof error === "string") return error;
   if (error.message) return error.message;
   return String(error);
+}
+
+function setText(el, value) {
+  if (el) el.textContent = value;
+}
+
+function setTroubleStep(name, state, detail) {
+  const card = document.getElementById("trouble-step-" + name);
+  const detailEl = document.getElementById("trouble-" + name + "Detail");
+  if (card) card.dataset.state = state || "pending";
+  if (detailEl) detailEl.textContent = detail || "";
+}
+
+function refreshTechnicalDetails() {
+  const previewTarget = resolvedTargetEl ? resolvedTargetEl.textContent.trim() : "";
+  setText(techPageOriginEl, PAGE_ORIGIN || (IS_FILE_PROTOCOL ? "file://" : PAGE_PROTOCOL || "unknown"));
+  setText(techTargetEl, currentTarget ? currentTarget.display : (previewTarget || getBaseInputValue() || "/"));
+  setText(techBackendEl, currentCapabilities.backend || (stateStreamModeEl ? stateStreamModeEl.textContent : "-"));
+  setText(techWebRtcEl, currentCapabilities.webrtcAvailable === false ? "Unavailable" : "Available");
+  setText(techMjpegEl, currentCapabilities.mjpegAvailable === false ? "Unavailable" : "Available");
+  setText(techLastStatusEl, lastConnectionStatus || "-");
+  setText(techLastErrorEl, lastConnectionError || "None");
+}
+
+function setConnectionSummary(text, tone = "neutral") {
+  lastConnectionStatus = text || "";
+  if (troubleSummaryEl) {
+    troubleSummaryEl.textContent = text || "";
+    troubleSummaryEl.className = tone === "error" ? "small error" : tone === "warn" ? "small warn" : "small";
+  }
+  refreshTechnicalDetails();
+}
+
+function rememberConnectionError(error) {
+  lastConnectionError = formatError(error);
+  refreshTechnicalDetails();
+}
+
+function clearConnectionError() {
+  lastConnectionError = "";
+  refreshTechnicalDetails();
+}
+
+function updateBaseInputUi() {
+  if (!baseInputEl) return;
+  const directSelected = connectionModeEl ? connectionModeEl.value === "direct" : (baseInputEl.value.trim() !== "/");
+  if (directSelected) {
+    baseInputEl.readOnly = false;
+    if (!baseInputEl.value.trim() || baseInputEl.value.trim() === "/") {
+      baseInputEl.value = rememberedDirectBase || DEFAULT_DIRECT_BASE;
+    }
+    baseInputEl.placeholder = DEFAULT_DIRECT_BASE;
+  } else {
+    const currentValue = baseInputEl.value.trim();
+    if (currentValue && currentValue !== "/") {
+      rememberedDirectBase = currentValue;
+    }
+    baseInputEl.readOnly = true;
+    baseInputEl.value = "/";
+    baseInputEl.placeholder = "/";
+  }
+}
+
+function stageReconnectPreview(target) {
+  intentionalDisconnect = true;
+  pausedForHidden = false;
+  pendingSwitch = null;
+  clearReconnectTimer();
+  stopStatePolling();
+  stopCodecPolling();
+  connectGeneration += 1;
+  closePeer();
+  cancelMjpeg();
+  hideMedia();
+  currentTarget = null;
+  setBusy(false);
+  resetWebRtcMediaStats();
+  setWorkerHealth("neutral", "Reconnect to test new target");
+  setStreamMode("idle", "Connection settings changed. Click Reconnect.");
+  setPlaceholder("Click Reconnect to test " + target.display + ".", true);
+  setTroubleStep(
+    "state",
+    "pending",
+    target.kind === "proxy"
+      ? "Click Reconnect to test proxy."
+      : "Click Reconnect to test direct mode."
+  );
+  setTroubleStep("webrtc", "pending", "WebRTC retries after reconnect.");
+  setTroubleStep("video", "pending", "Fallback retries after reconnect.");
+  setConnectionSummary(
+    target.kind === "proxy"
+      ? "Proxy selected. Click Reconnect."
+      : "Direct selected. Click Reconnect.",
+    target.kind === "proxy" ? "neutral" : "warn"
+  );
+}
+
+function updateTargetPreview() {
+  try {
+    const previewTarget = resolveTargetBase();
+    if (previewTarget.kind === "direct") rememberedDirectBase = previewTarget.display;
+    setText(resolvedTargetEl, previewTarget.display);
+    setTroubleStep(
+      "route",
+      "ok",
+      previewTarget.kind === "proxy"
+        ? "Browser -> web app proxy -> worker"
+        : "Browser -> worker directly at " + previewTarget.display
+    );
+    if (
+      currentTarget &&
+      (currentTarget.kind !== previewTarget.kind || currentTarget.display !== previewTarget.display)
+    ) {
+      stageReconnectPreview(previewTarget);
+    } else {
+      refreshTechnicalDetails();
+    }
+  } catch (error) {
+    setText(resolvedTargetEl, "Invalid target");
+    setTroubleStep("route", "error", formatError(error));
+    setTroubleStep("state", "error", "Enter a valid proxy path or full http(s) URL.");
+    setConnectionSummary(formatError(error), "error");
+    rememberConnectionError(error);
+  }
 }
 
 function isModelSwitchCommand(cmd) {
@@ -195,6 +344,14 @@ function endpointFor(path, target = currentTarget || resolveTargetBase()) {
   return (target.base || "") + path;
 }
 
+function rawFrameEndpointFor(target = currentTarget || resolveTargetBase()) {
+  return endpointFor(target.kind === "proxy" ? "/api/proxy/frame-raw.jpg" : "/frame-raw.jpg", target);
+}
+
+function rawMjpegEndpointFor(target = currentTarget || resolveTargetBase()) {
+  return endpointFor("/stream-raw.mjpg", target);
+}
+
 async function workerFetch(path, init = {}, options = {}) {
   const target = options.target || currentTarget || resolveTargetBase();
   const url = endpointFor(path, target);
@@ -253,8 +410,8 @@ function setWorkerHealth(state, text) {
 function setBusy(on, title = "Switching model...") {
   busyTitleEl.textContent = title;
   busyOverlayEl.classList.toggle("show", !!on);
-  btnPrevEl.disabled = !!on;
-  btnNextEl.disabled = !!on;
+  if (btnPrevEl) btnPrevEl.disabled = !!on;
+  if (btnNextEl) btnNextEl.disabled = !!on;
 }
 
 function setPlaceholder(text = "Not connected.", show = true) {
@@ -266,15 +423,31 @@ function setConnectionMode(target) {
   if (stateConnectionEl) {
     stateConnectionEl.textContent = target.kind === "proxy" ? "Proxy" : "Direct";
   }
+  if (connectionModeEl) {
+    connectionModeEl.value = target.kind === "proxy" ? "proxy" : "direct";
+  }
+  if (target.kind === "direct") {
+    rememberedDirectBase = target.display;
+  }
+  updateBaseInputUi();
+  setText(resolvedTargetEl, target.display);
   if (connectionNoteEl) {
     if (target.kind === "proxy") {
-      connectionNoteEl.textContent = "Proxy mode is active.";
+      connectionNoteEl.textContent = "Web app proxy is active.";
       connectionNoteEl.className = "small";
     } else {
-      connectionNoteEl.textContent = "Direct mode is active.";
+      connectionNoteEl.textContent = "Browser connects to the worker directly.";
       connectionNoteEl.className = "small warn";
     }
   }
+  setTroubleStep(
+    "route",
+    "ok",
+    target.kind === "proxy"
+      ? "Browser -> web app -> worker"
+      : "Browser -> worker"
+  );
+  refreshTechnicalDetails();
 }
 
 function setStreamMode(mode, detail = "") {
@@ -341,7 +514,9 @@ function formatBitrate(bps) {
 }
 
 function stopStatePolling() {
-  if (statePollTimer) { window.clearInterval(statePollTimer); statePollTimer = null; }
+  if (statePollTimer) { window.clearTimeout(statePollTimer); statePollTimer = null; }
+  statePollToken += 1;
+  statePollFailureCount = 0;
 }
 
 function stopCodecPolling() {
@@ -422,9 +597,29 @@ function updateStateUi(state) {
 }
 
 async function fetchState() {
+  return fetchStateWithGuard({});
+}
+
+async function fetchStateWithGuard(options = {}) {
+  const pollToken = Number.isFinite(options.pollToken) ? options.pollToken : null;
+  const targetSnapshot = typeof options.targetSnapshot === "string" ? options.targetSnapshot : "";
   const state = await workerFetch("/api/state", {}, { expect: "json" });
+  if (pollToken !== null && pollToken !== statePollToken) return null;
+  if (
+    targetSnapshot &&
+    (!currentTarget || (currentTarget.kind + "|" + currentTarget.display) !== targetSnapshot)
+  ) {
+    return null;
+  }
   currentCapabilities = capabilitiesFromState(state);
   updateStateUi(state);
+  clearConnectionError();
+  setTroubleStep("state", "ok", "State API reachable.");
+  if (currentCapabilities.webrtcAvailable === false) {
+    setTroubleStep("webrtc", "warn", "Worker reports MJPEG-only streaming.");
+  } else if ((stateStreamModeEl && stateStreamModeEl.dataset.mode) !== "webrtc") {
+    setTroubleStep("webrtc", "pending", "Worker can accept WebRTC offers.");
+  }
   if (state && state.busy) {
     setBusy(true, state.busy_text || "Working...");
     if (pendingSwitch) setStatus((state.busy_text || "Switching model...") + " Please wait...");
@@ -434,16 +629,28 @@ async function fetchState() {
   if (state && state.last_error) {
     setBusy(false); pendingSwitch = null;
     setWorkerHealth("warning", "Worker reported an issue");
+    setTroubleStep("state", "warn", "Worker reported: " + state.last_error);
+    rememberConnectionError(state.last_error);
+    setConnectionSummary(state.last_error, "warn");
     setStatus(state.last_error, true);
   } else if (state && state.worker_alive === false) {
     setBusy(false);
     setWorkerHealth("warning", "Worker is restarting");
+    setTroubleStep("state", "warn", "Worker paused or restarting.");
+    setConnectionSummary("Worker paused or restarting.", "warn");
     setStatus("Worker paused or restarting...", true);
   } else {
     setWorkerHealth(
       currentCapabilities.webrtcAvailable === false ? "warning" : "online",
       currentCapabilities.webrtcAvailable === false ? "Worker online (MJPEG only)" : "Worker online"
     );
+    if ((stateStreamModeEl && stateStreamModeEl.dataset.mode) === "mjpeg") {
+      setConnectionSummary("Worker reachable. Stream is running with MJPEG fallback.", "warn");
+    } else if ((stateStreamModeEl && stateStreamModeEl.dataset.mode) === "webrtc") {
+      setConnectionSummary("Worker reachable. Live video is flowing over WebRTC.");
+    } else {
+      setConnectionSummary("Worker reachable. Preparing the best available video path.");
+    }
   }
   if (pendingSwitch && Number(state && state.cmd_seq_applied || 0) >= pendingSwitch.seq) {
     setBusy(false);
@@ -451,27 +658,88 @@ async function fetchState() {
     pendingSwitch = null;
   }
   lastPollErrorText = "";
+  refreshTechnicalDetails();
   return state;
+}
+
+function nextStatePollDelay(state = null) {
+  if (statePollFailureCount > 0) {
+    const scaled = STATE_POLL_INTERVAL_MS * Math.pow(2, statePollFailureCount);
+    return Math.min(scaled, STATE_POLL_MAX_INTERVAL_MS);
+  }
+  if (pendingSwitch || (state && state.busy)) return STATE_POLL_FAST_MS;
+  const mode = stateStreamModeEl ? stateStreamModeEl.dataset.mode : "";
+  if (
+    state &&
+    !state.last_error &&
+    state.worker_alive !== false &&
+    (mode === "webrtc" || mode === "mjpeg")
+  ) {
+    return STATE_POLL_CONNECTED_MS;
+  }
+  return STATE_POLL_INTERVAL_MS;
+}
+
+function scheduleNextStatePoll(delayMs, pollToken) {
+  if (pollToken !== statePollToken) return;
+  if (statePollTimer) window.clearTimeout(statePollTimer);
+  statePollTimer = window.setTimeout(async () => {
+    if (
+      pollToken !== statePollToken ||
+      !currentTarget ||
+      pausedForHidden ||
+      intentionalDisconnect
+    ) {
+      return;
+    }
+    const targetSnapshot = currentTarget.kind + "|" + currentTarget.display;
+    let state = null;
+    try {
+      state = await fetchStateWithGuard({ pollToken, targetSnapshot });
+      if (pollToken !== statePollToken) return;
+      if (state !== null) {
+        statePollFailureCount = 0;
+      }
+    } catch (error) {
+      if (intentionalDisconnect || pausedForHidden || pollToken !== statePollToken) return;
+      statePollFailureCount += 1;
+      const message = "Worker unavailable: " + formatError(error);
+      setWorkerHealth("error", "Worker unavailable");
+      setTroubleStep("state", "error", formatError(error));
+      setConnectionSummary("State API is not reachable. " + formatError(error), "error");
+      rememberConnectionError(error);
+      if (message !== lastPollErrorText) { setStatus(message, true); lastPollErrorText = message; }
+    } finally {
+      if (
+        pollToken === statePollToken &&
+        currentTarget &&
+        !pausedForHidden &&
+        !intentionalDisconnect
+      ) {
+        scheduleNextStatePoll(nextStatePollDelay(state), pollToken);
+      }
+    }
+  }, delayMs);
 }
 
 function startStatePolling() {
   stopStatePolling();
-  statePollTimer = window.setInterval(async () => {
-    if (!currentTarget || pausedForHidden) return;
-    try { await fetchState(); }
-    catch (error) {
-      if (intentionalDisconnect || pausedForHidden) return;
-      const message = "Worker unavailable: " + formatError(error);
-      setWorkerHealth("error", "Worker unavailable");
-      if (message !== lastPollErrorText) { setStatus(message, true); lastPollErrorText = message; }
-    }
-  }, STATE_POLL_INTERVAL_MS);
+  const pollToken = statePollToken;
+  scheduleNextStatePoll(STATE_POLL_INTERVAL_MS, pollToken);
 }
 
 async function refreshStateNow() {
-  try { return await fetchState(); }
+  try {
+    const state = await fetchState();
+    statePollFailureCount = 0;
+    return state;
+  }
   catch (error) {
+    if (intentionalDisconnect || pausedForHidden) return null;
     setWorkerHealth("error", "Worker unavailable");
+    setTroubleStep("state", "error", formatError(error));
+    setConnectionSummary("State fetch failed. " + formatError(error), "error");
+    rememberConnectionError(error);
     setStatus("State fetch failed: " + formatError(error), true);
     return null;
   }
@@ -482,6 +750,9 @@ async function beginMjpegOnly(messageText) {
   clearReconnectTimer(); closePeer(); cancelMjpeg(); hideMedia();
   setWorkerHealth("connecting", "Connecting with MJPEG");
   setStreamMode("connecting", "Worker reports MJPEG-only streaming.");
+  setTroubleStep("webrtc", "warn", "Worker reported MJPEG-only mode.");
+  setTroubleStep("video", "pending", "Trying MJPEG stream...");
+  setConnectionSummary(messageText || "Connecting with MJPEG because WebRTC is unavailable.", "warn");
   setPlaceholder(messageText || "Connecting to MJPEG stream...", true);
   setStatus(messageText || "Connecting to MJPEG stream...");
   const loaded = await tryMjpegStream(endpointFor("/stream.mjpg"), generation);
@@ -490,12 +761,18 @@ async function beginMjpegOnly(messageText) {
     showFallback(); setPlaceholder("", false);
     setWorkerHealth("warning", "Worker online (MJPEG only)");
     setStreamMode("mjpeg", "Worker is running in MJPEG-only mode.");
+    clearConnectionError();
+    setTroubleStep("video", "warn", "MJPEG stream is live.");
+    setConnectionSummary("Connected using MJPEG fallback.", "warn");
     setStatus("Connected using MJPEG."); setCodecLabel("MJPEG"); setBitrateLabel("-");
     return;
   }
   cancelMjpeg(); hideMedia();
   setWorkerHealth("error", "MJPEG stream unavailable");
   setStreamMode("error", "MJPEG stream not reachable.");
+  setTroubleStep("video", "error", "MJPEG endpoint not reachable.");
+  setConnectionSummary("Could not open MJPEG stream.", "error");
+  rememberConnectionError("MJPEG stream not reachable.");
   setPlaceholder("Stream unavailable. MJPEG endpoint not reachable.", true);
   setStatus("Could not open MJPEG stream.", true);
 }
@@ -518,6 +795,9 @@ function waitForIceComplete(peer) {
 
 async function openPeerConnection(generation) {
   if (typeof RTCPeerConnection !== "function") throw createError("This browser does not support WebRTC.");
+  setTroubleStep("webrtc", "pending", "Negotiating WebRTC offer...");
+  setTroubleStep("video", "pending", "Waiting for the first video frame...");
+  setConnectionSummary("Negotiating WebRTC with the worker...");
   const peer = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }]
   });
@@ -532,6 +812,10 @@ async function openPeerConnection(generation) {
       videoEl.srcObject = stream; showVideo(); setPlaceholder("", false);
       setWorkerHealth("online", "Receiving WebRTC video");
       setStreamMode("webrtc", "Live video is streaming over WebRTC.");
+      clearConnectionError();
+      setTroubleStep("webrtc", "ok", "WebRTC negotiated successfully.");
+      setTroubleStep("video", "ok", "Receiving live WebRTC frames.");
+      setConnectionSummary("Receiving live video over WebRTC.");
       setStatus("Receiving WebRTC video."); refreshWebRtcMediaLabels().catch(() => {});
     }
   };
@@ -541,6 +825,8 @@ async function openPeerConnection(generation) {
     if (state === "connected") {
       webrtcConsecutiveFailures = 0;
       setWorkerHealth("online", "Worker online");
+      setTroubleStep("webrtc", "ok", "WebRTC connected. Waiting for video frames.");
+      setConnectionSummary("WebRTC connected. Waiting for video...");
       setStatus("WebRTC connected. Waiting for video...");
       return;
     }
@@ -548,6 +834,9 @@ async function openPeerConnection(generation) {
       if (intentionalDisconnect || pausedForHidden || document.hidden) return;
       webrtcConsecutiveFailures++;
       setWorkerHealth("warning", "WebRTC interrupted");
+      setTroubleStep("webrtc", "warn", "WebRTC " + state + ". Retrying once before fallback.");
+      setTroubleStep("video", "pending", "Waiting for reconnect or MJPEG fallback...");
+      rememberConnectionError("WebRTC " + state + ".");
       if (webrtcConsecutiveFailures > 1) { closePeer(); tryMjpegFallback(generation, new Error("WebRTC " + state + " after retry.")); return; }
       scheduleReconnect(new Error("WebRTC connection " + state + "."));
     }
@@ -567,6 +856,9 @@ async function openPeerConnection(generation) {
   if (!receivedVideoTrack && generation === connectGeneration && activePeer === peer) {
     setWorkerHealth("connecting", "Waiting for video");
     setStreamMode("connecting", "WebRTC negotiated. Waiting for video frames...");
+    setTroubleStep("webrtc", "ok", "WebRTC negotiated. Waiting for video frames.");
+    setTroubleStep("video", "pending", "Transport connected. Waiting for frames...");
+    setConnectionSummary("WebRTC negotiated. Waiting for live video...");
     setStatus("WebRTC negotiated. Waiting for video...");
   }
 }
@@ -577,6 +869,10 @@ function scheduleReconnect(error) {
   closePeer(); cancelMjpeg();
   setWorkerHealth("connecting", "Retrying WebRTC");
   setStreamMode("connecting", "Retrying WebRTC once before MJPEG fallback.");
+  setTroubleStep("webrtc", "warn", "WebRTC disconnected. Retrying once.");
+  setTroubleStep("video", "pending", "Waiting for reconnect...");
+  setConnectionSummary("WebRTC disconnected. Retrying once before MJPEG fallback.", "warn");
+  rememberConnectionError(error);
   setPlaceholder("WebRTC disconnected. Retrying...", true);
   setStatus("WebRTC disconnected: " + detail + " Retrying...", true);
   reconnectTimer = window.setTimeout(() => {
@@ -607,12 +903,20 @@ async function tryMjpegFallback(generation, error) {
   if (currentCapabilities && currentCapabilities.mjpegAvailable === false) {
     hideMedia(); setStreamMode("error", "WebRTC failed and worker did not advertise MJPEG.");
     setWorkerHealth("error", "No MJPEG fallback");
+    setTroubleStep("webrtc", "warn", "WebRTC failed: " + formatError(error));
+    setTroubleStep("video", "error", "Worker did not advertise MJPEG fallback.");
+    setConnectionSummary("Stream unavailable. No MJPEG fallback was advertised.", "error");
+    rememberConnectionError(error);
     setPlaceholder("Stream unavailable. No MJPEG fallback.", true);
     setStatus("WebRTC failed: " + formatError(error), true); return;
   }
   const detail = formatError(error);
   setWorkerHealth("connecting", "Trying MJPEG fallback");
   setStreamMode("connecting", "Trying MJPEG fallback...");
+  setTroubleStep("webrtc", "warn", "WebRTC failed: " + detail);
+  setTroubleStep("video", "pending", "Trying MJPEG fallback...");
+  setConnectionSummary("WebRTC failed. Trying MJPEG fallback...", "warn");
+  rememberConnectionError(error);
   setPlaceholder("WebRTC unavailable. Trying MJPEG...", true);
   setStatus("WebRTC failed: " + detail + " Trying MJPEG...", true);
   const loaded = await tryMjpegStream(endpointFor("/stream.mjpg"), generation);
@@ -620,12 +924,18 @@ async function tryMjpegFallback(generation, error) {
   if (loaded) {
     showFallback(); setPlaceholder("", false);
     setWorkerHealth("warning", "Using MJPEG fallback");
-    setStreamMode("mjpeg", "Using MJPEG fallback."); setStatus("Using MJPEG fallback.", true);
+    setStreamMode("mjpeg", "Using MJPEG fallback.");
+    clearConnectionError();
+    setTroubleStep("video", "warn", "MJPEG fallback is live.");
+    setConnectionSummary("Using MJPEG fallback.", "warn");
+    setStatus("Using MJPEG fallback.");
     setCodecLabel("MJPEG"); setBitrateLabel("-"); return;
   }
   cancelMjpeg(); hideMedia();
   setWorkerHealth("error", "Stream unavailable");
   setStreamMode("error", "WebRTC failed and MJPEG fallback unavailable.");
+  setTroubleStep("video", "error", "MJPEG fallback was unavailable.");
+  setConnectionSummary("WebRTC failed and MJPEG fallback was unavailable.", "error");
   setPlaceholder("Stream unavailable.", true); setStatus("WebRTC failed: " + detail, true);
 }
 
@@ -645,6 +955,10 @@ async function beginWebRtc(allowRetry, messageText) {
     if (shouldSkipMjpegFallback(error)) {
       const detail = formatError(error);
       setWorkerHealth("error", "Worker connection failed");
+      setTroubleStep("webrtc", "error", detail);
+      setTroubleStep("video", "error", "No video path available.");
+      setConnectionSummary(detail, "error");
+      rememberConnectionError(error);
       hideMedia(); setStreamMode("error", detail); setPlaceholder("Stream unavailable. " + detail, true);
       setStatus(detail, true); return;
     }
@@ -663,6 +977,11 @@ function disconnectStream(reason = "Disconnected.", isError = false) {
   connectGeneration += 1; closePeer(); cancelMjpeg(); hideMedia();
   setBusy(false); setStreamMode(isError ? "error" : "idle", isError ? reason : "Disconnected.");
   setWorkerHealth(isError ? "error" : "neutral", isError ? "Worker connection failed" : "Disconnected");
+  setTroubleStep("state", isError ? "error" : "neutral", isError ? reason : "Connection closed.");
+  setTroubleStep("webrtc", "neutral", "No active negotiation.");
+  setTroubleStep("video", "neutral", "No active stream.");
+  if (isError) rememberConnectionError(reason); else clearConnectionError();
+  setConnectionSummary(reason, isError ? "error" : "neutral");
   setPlaceholder(reason, true); setStatus(reason, isError); resetWebRtcMediaStats();
 }
 
@@ -671,6 +990,10 @@ function pauseStreamForHidden() {
   pausedForHidden = true; clearReconnectTimer(); stopStatePolling(); stopCodecPolling();
   connectGeneration += 1; closePeer(); cancelMjpeg(); hideMedia(); setBusy(false);
   setWorkerHealth("neutral", "Paused while tab is hidden");
+  setTroubleStep("state", "neutral", "Polling paused while the tab is hidden.");
+  setTroubleStep("webrtc", "neutral", "WebRTC paused while the tab is hidden.");
+  setTroubleStep("video", "neutral", "Video paused while the tab is hidden.");
+  setConnectionSummary("Paused while the tab is hidden.");
   setStreamMode("idle", "Paused while tab is hidden."); setPlaceholder("Paused while tab is hidden.", true);
   setStatus("Paused while tab is hidden."); resetWebRtcMediaStats();
 }
@@ -684,8 +1007,23 @@ async function connect() {
   currentCapabilities = { webrtcAvailable: true, mjpegAvailable: true, backend: "" };
   webrtcConsecutiveFailures = 0; setBusy(false); clearReconnectTimer();
   setWorkerHealth("connecting", "Connecting to worker");
-  setConnectionMode(target); startStatePolling(); startCodecPolling();
+  clearConnectionError();
+  setConnectionMode(target);
+  setTroubleStep("state", "pending", "Checking state...");
+  setTroubleStep("webrtc", "pending", "Waiting for WebRTC...");
+  setTroubleStep("video", "pending", "No frames yet.");
+  setConnectionSummary("Checking worker...");
+  startStatePolling(); startCodecPolling();
   await refreshStateNow();
+  if (
+    intentionalDisconnect ||
+    pausedForHidden ||
+    !currentTarget ||
+    currentTarget.kind !== target.kind ||
+    currentTarget.display !== target.display
+  ) {
+    return;
+  }
   await beginPreferredStream(true, "Connecting to " + target.display + "...");
 }
 
@@ -739,7 +1077,9 @@ async function captureFrame() {
   // Fetch raw frame (without overlay) for toggle support
   let rawBlob = null;
   try {
-    const rawResp = await fetch("/api/proxy/frame-raw.jpg", { cache: "no-store" });
+    const rawTarget = currentTarget || resolveTargetBase();
+    const rawUrl = rawFrameEndpointFor(rawTarget);
+    const rawResp = await fetch(rawUrl, { cache: "no-store" });
     if (rawResp.ok) rawBlob = await rawResp.blob();
   } catch (_) { /* raw frame optional */ }
 
@@ -770,11 +1110,144 @@ function toggleRecord() {
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     stopRecord();
   } else {
-    startRecord();
+    startRecord().catch(error => setStatus("Recording failed: " + formatError(error), true));
   }
 }
 
-function startRecord() {
+function preferredRecordingMimeType() {
+  if (typeof MediaRecorder === "undefined") return "video/webm";
+  if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) return "video/webm;codecs=vp9";
+  if (MediaRecorder.isTypeSupported("video/webm")) return "video/webm";
+  if (MediaRecorder.isTypeSupported("video/mp4")) return "video/mp4";
+  return "video/webm";
+}
+
+function recordingExtensionForMime(mimeType) {
+  return String(mimeType || "").toLowerCase().includes("mp4") ? "mp4" : "webm";
+}
+
+function stopMediaRecorderInstance(recorder) {
+  return new Promise(resolve => {
+    if (!recorder || recorder.state === "inactive") {
+      resolve();
+      return;
+    }
+    const onStop = () => {
+      recorder.removeEventListener("stop", onStop);
+      resolve();
+    };
+    recorder.addEventListener("stop", onStop, { once: true });
+    try {
+      recorder.stop();
+    } catch (_) {
+      recorder.removeEventListener("stop", onStop);
+      resolve();
+    }
+  });
+}
+
+function cleanupRawRecorderResources() {
+  const cleanup = rawRecorderCleanup;
+  rawRecorderCleanup = null;
+  if (typeof cleanup === "function") cleanup();
+  rawMediaRecorder = null;
+}
+
+function overlayTrackFps(stream) {
+  try {
+    const track = typeof stream.getVideoTracks === "function" ? stream.getVideoTracks()[0] : null;
+    const fromSettings = Number(track?.getSettings?.().frameRate);
+    if (Number.isFinite(fromSettings) && fromSettings > 0) return Math.min(30, Math.max(5, fromSettings));
+  } catch (_) {
+    // Fall back to UI state below.
+  }
+  const fromUi = parseFloat(stateFpsEl?.textContent || "");
+  if (Number.isFinite(fromUi) && fromUi > 0) return Math.min(30, Math.max(5, fromUi));
+  return RAW_RECORD_FPS_FALLBACK;
+}
+
+async function createRawRecorderSession(mimeType, width, height, fps) {
+  const img = new Image();
+  img.decoding = "async";
+  img.crossOrigin = "anonymous";
+  img.referrerPolicy = "no-referrer";
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(2, width || 640);
+  canvas.height = Math.max(2, height || 360);
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) throw new Error("Raw recorder could not create a canvas.");
+
+  const target = currentTarget || resolveTargetBase();
+  const rawStreamUrl = rawMjpegEndpointFor(target) + "?ts=" + Date.now();
+
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Raw stream timed out."));
+    }, RAW_RECORD_SETUP_TIMEOUT_MS);
+    const cleanup = () => {
+      window.clearTimeout(timeoutId);
+      img.removeEventListener("load", onLoad);
+      img.removeEventListener("error", onError);
+    };
+    const onLoad = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Raw stream could not be opened."));
+    };
+    img.addEventListener("load", onLoad);
+    img.addEventListener("error", onError);
+    img.src = rawStreamUrl;
+  });
+
+  let rafId = 0;
+  let stopped = false;
+  const draw = () => {
+    if (stopped) return;
+    try {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      }
+    } catch (_) {
+      // Keep the recorder running with the last good frame.
+    }
+    rafId = window.requestAnimationFrame(draw);
+  };
+  draw();
+
+  const canvasStream = canvas.captureStream(Math.max(5, Math.min(30, fps || RAW_RECORD_FPS_FALLBACK)));
+  const recorder = new MediaRecorder(canvasStream, { mimeType });
+  const chunks = [];
+  recorder.ondataavailable = event => {
+    if (event.data && event.data.size > 0) chunks.push(event.data);
+  };
+
+  return {
+    recorder,
+    chunks,
+    cleanup: () => {
+      stopped = true;
+      if (rafId) window.cancelAnimationFrame(rafId);
+      try { img.src = ""; } catch (_) { /* ignore */ }
+      try { canvasStream.getTracks().forEach(track => track.stop()); } catch (_) { /* ignore */ }
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  };
+}
+
+async function startRecord() {
   let stream;
   if (videoEl.classList.contains("show") && videoEl.srcObject) {
     stream = videoEl.srcObject;
@@ -782,19 +1255,63 @@ function startRecord() {
     setStatus("Recording requires active WebRTC stream.", true);
     return;
   }
+
+  if (recordStopPromise) return;
+
+  const mimeType = preferredRecordingMimeType();
+  recordBtn.disabled = true;
+  setStatus("Preparing recording...");
+
   recordedChunks = [];
-  const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm";
+  rawRecordedChunks = [];
+  recordMimeType = mimeType;
+
+  const width = videoEl.videoWidth || 640;
+  const height = videoEl.videoHeight || 360;
+  const fps = overlayTrackFps(stream);
+
+  let overlayRecorder = null;
+  let rawSession = null;
   try {
-    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    overlayRecorder = new MediaRecorder(stream, { mimeType });
   } catch (e) {
-    setStatus("MediaRecorder not supported: " + e.message, true); return;
+    recordBtn.disabled = false;
+    setStatus("MediaRecorder not supported: " + e.message, true);
+    return;
   }
-  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
-  mediaRecorder.onstop = uploadRecording;
+
+  try {
+    rawSession = await createRawRecorderSession(mimeType, width, height, fps);
+  } catch (error) {
+    setStatus("Raw companion stream unavailable. Recording overlay only.", true);
+  }
+
+  mediaRecorder = overlayRecorder;
+  mediaRecorder.ondataavailable = event => {
+    if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+  };
+
+  rawMediaRecorder = rawSession ? rawSession.recorder : null;
+  rawRecorderCleanup = rawSession ? rawSession.cleanup : null;
+  if (rawSession) {
+    rawMediaRecorder.ondataavailable = event => {
+      if (event.data && event.data.size > 0) rawRecordedChunks.push(event.data);
+    };
+  }
+
   mediaRecorder.start(1000);
+  if (rawMediaRecorder) {
+    try {
+      rawMediaRecorder.start(1000);
+    } catch (error) {
+      cleanupRawRecorderResources();
+      setStatus("Raw companion stream could not start. Recording overlay only.", true);
+    }
+  }
   recordStartTime = Date.now();
   recordBtn.textContent = "Stop recording";
   recordBtn.classList.add("danger");
+  recordBtn.disabled = false;
   recordTimerEl.style.display = "inline-block";
   recordTimerInterval = setInterval(() => {
     const secs = Math.floor((Date.now() - recordStartTime) / 1000);
@@ -802,43 +1319,71 @@ function startRecord() {
     const s = (secs % 60).toString().padStart(2, "0");
     recordTimerEl.textContent = m + ":" + s;
   }, 500);
+  setStatus(rawMediaRecorder ? "Recording overlay + raw video." : "Recording overlay video.");
 }
 
 function stopRecord() {
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
-    mediaRecorder.stop();
-  }
+  if (recordStopPromise) return;
   clearInterval(recordTimerInterval);
   recordBtn.textContent = "Record clip";
   recordBtn.classList.remove("danger");
   recordTimerEl.style.display = "none";
   recordTimerEl.textContent = "";
+  recordBtn.disabled = true;
+
+  recordStopPromise = Promise.all([
+    stopMediaRecorderInstance(mediaRecorder),
+    stopMediaRecorderInstance(rawMediaRecorder),
+  ])
+    .then(() => uploadRecording())
+    .finally(() => {
+      recordStopPromise = null;
+      recordBtn.disabled = false;
+    });
 }
 
 async function uploadRecording() {
-  if (recordedChunks.length === 0) { setStatus("No video data recorded.", true); return; }
-  const duration = recordStartTime ? (Date.now() - recordStartTime) / 1000 : undefined;
-  const blob = new Blob(recordedChunks, { type: "video/webm" });
+  const overlayChunks = recordedChunks.slice();
+  const rawChunks = rawRecordedChunks.slice();
   recordedChunks = [];
+  rawRecordedChunks = [];
+
+  if (overlayChunks.length === 0) {
+    cleanupRawRecorderResources();
+    mediaRecorder = null;
+    setStatus("No video data recorded.", true);
+    return;
+  }
+
+  const duration = recordStartTime ? (Date.now() - recordStartTime) / 1000 : undefined;
+  recordStartTime = null;
+  const mimeType = recordMimeType || "video/webm";
+  const extension = recordingExtensionForMime(mimeType);
+  const blob = new Blob(overlayChunks, { type: mimeType });
+  const rawBlob = rawChunks.length ? new Blob(rawChunks, { type: mimeType }) : null;
+  mediaRecorder = null;
+  cleanupRawRecorderResources();
   const csrf = getCsrf();
   const fd = new FormData();
   fd.append("type", "video");
-  fd.append("overlay_file", blob, "recording.webm");
+  fd.append("overlay_file", blob, `recording.${extension}`);
+  if (rawBlob && rawBlob.size > 0) {
+    fd.append("raw_file", rawBlob, `recording_raw.${extension}`);
+  }
   if (duration) fd.append("duration", duration.toFixed(2));
-  recordBtn.disabled = true;
   try {
     const resp = await fetch("/api/recordings/upload", { method: "POST", headers: { "X-CSRF-Token": csrf }, body: fd });
     if (resp.ok) {
       const data = await resp.json();
-      setStatus("Video saved (recording #" + data.id + ")");
+      setStatus(rawBlob && rawBlob.size > 0
+        ? "Video saved with overlay + raw variants (recording #" + data.id + ")"
+        : "Video saved (recording #" + data.id + ")");
     } else {
       const err = await resp.json().catch(() => ({}));
       setStatus("Upload failed: " + (err.error || resp.status), true);
     }
   } catch (e) {
     setStatus("Upload failed: " + e.message, true);
-  } finally {
-    recordBtn.disabled = false;
   }
 }
 
@@ -853,11 +1398,18 @@ videoEl.addEventListener("loadedmetadata", () => {
   }
 });
 
+fallbackEl.addEventListener("load", () => {
+  if (intentionalDisconnect || pausedForHidden) return;
+});
+
 fallbackEl.addEventListener("error", () => {
   if (stateStreamModeEl.dataset.mode !== "mjpeg" || intentionalDisconnect || pausedForHidden) return;
   cancelMjpeg(); hideMedia();
   setWorkerHealth("error", "MJPEG fallback disconnected");
   setStreamMode("error", "MJPEG fallback disconnected.");
+  setTroubleStep("video", "error", "MJPEG fallback disconnected.");
+  setConnectionSummary("MJPEG fallback disconnected.", "error");
+  rememberConnectionError("MJPEG fallback disconnected.");
   setPlaceholder("MJPEG fallback disconnected.", true);
   setStatus("MJPEG fallback disconnected.", true);
 });
@@ -880,26 +1432,43 @@ window.addEventListener("beforeunload", () => {
 });
 
 if (baseInputEl) {
+  baseInputEl.addEventListener("input", () => {
+    if (!baseInputEl.readOnly) rememberedDirectBase = baseInputEl.value.trim() || rememberedDirectBase;
+    updateTargetPreview();
+  });
   baseInputEl.addEventListener("keydown", event => {
     if (event.key === "Enter") connect().catch(error => setStatus(formatError(error), true));
   });
 }
 
-// ===== Init =====
-if (baseInputEl) {
-  if (IS_FILE_PROTOCOL) {
-    if (!baseInputEl.value.trim() || baseInputEl.value.trim() === "/") baseInputEl.value = DEFAULT_DIRECT_BASE;
-    baseInputEl.placeholder = DEFAULT_DIRECT_BASE;
-  } else {
-    if (!baseInputEl.value.trim()) baseInputEl.value = "/";
-    baseInputEl.placeholder = "/ or " + DEFAULT_DIRECT_BASE;
-  }
+if (connectionModeEl) {
+  connectionModeEl.addEventListener("change", () => {
+    updateBaseInputUi();
+    updateTargetPreview();
+  });
 }
 
-setConnectionMode(IS_FILE_PROTOCOL ? { kind: "direct", display: DEFAULT_DIRECT_BASE } : { kind: "proxy" });
+// ===== Init =====
+if (connectionModeEl) {
+  connectionModeEl.value = IS_FILE_PROTOCOL ? "direct" : "proxy";
+}
+if (baseInputEl) {
+  if (IS_FILE_PROTOCOL && (!baseInputEl.value.trim() || baseInputEl.value.trim() === "/")) {
+    baseInputEl.value = DEFAULT_DIRECT_BASE;
+  } else if (!IS_FILE_PROTOCOL && !baseInputEl.value.trim()) {
+    baseInputEl.value = "/";
+  }
+}
+updateBaseInputUi();
+setConnectionMode(IS_FILE_PROTOCOL ? { kind: "direct", display: getBaseInputValue() || DEFAULT_DIRECT_BASE } : { kind: "proxy", display: PAGE_ORIGIN || "/" });
+updateTargetPreview();
 setStreamMode("idle", "WebRTC first, MJPEG fallback if needed.");
 setWorkerHealth("connecting", "Connecting to worker");
 resetWebRtcMediaStats();
+setTroubleStep("state", "pending", "Waiting for the first worker check.");
+setTroubleStep("webrtc", "pending", "WebRTC will be tried first.");
+setTroubleStep("video", "pending", "MJPEG fallback stays on standby.");
+setConnectionSummary("Preparing connection checks...");
 setPlaceholder(IS_FILE_PROTOCOL ? "Connecting to local worker..." : "Connecting...", true);
 connect().catch(error => setStatus(formatError(error), true));
 
@@ -961,6 +1530,9 @@ async function registerPasskey() {
   const btn = document.getElementById('register-passkey-btn');
   if (btn) btn.disabled = true;
   try {
+    const appUI = window.AppUI || {};
+    const promptDialog = typeof appUI.prompt === "function" ? appUI.prompt : async () => null;
+    const toast = typeof appUI.toast === "function" ? appUI.toast : () => null;
     const beginResp = await fetch('/auth/webauthn/register/begin', {
       method: 'POST', headers: { 'X-CSRF-Token': getCsrf() }
     });
@@ -983,7 +1555,15 @@ async function registerPasskey() {
         clientDataJSON: bufferToBase64url(credential.response.clientDataJSON)
       }
     };
-    const name = prompt('Name for this passkey:', 'My Passkey');
+    const name = await promptDialog({
+      title: "Name passkey",
+      message: "Choose a friendly name for this passkey.",
+      inputLabel: "Passkey name",
+      placeholder: "My Passkey",
+      value: "My Passkey",
+      confirmLabel: "Save passkey",
+      cancelLabel: "Cancel"
+    });
     if (name) attestation.name = name;
 
     const completeResp = await fetch('/auth/webauthn/register/complete', {
@@ -996,24 +1576,43 @@ async function registerPasskey() {
       throw new Error(err.detail || 'Registration failed');
     }
     setStatus("Passkey registered successfully!");
+    toast("Passkey registered successfully.", { tone: "success", title: "Passkey added" });
     await loadPasskeys();
   } catch (err) {
-    if (err.name !== 'AbortError') setStatus('Passkey error: ' + err.message, true);
+    if (err.name !== 'AbortError') {
+      setStatus('Passkey error: ' + err.message, true);
+      toast("Passkey error: " + err.message, { tone: "error", title: "Passkey failed" });
+    }
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
 async function deletePasskey(credId, name) {
-  if (!confirm('Delete passkey "' + name + '"?')) return;
+  const appUI = window.AppUI || {};
+  const confirmDialog = typeof appUI.confirm === "function"
+    ? appUI.confirm
+    : async () => false;
+  const toast = typeof appUI.toast === "function" ? appUI.toast : () => null;
+  const confirmed = await confirmDialog({
+    title: "Delete passkey",
+    message: 'Delete passkey "' + name + '"? This cannot be undone.',
+    confirmLabel: "Delete passkey",
+    cancelLabel: "Keep passkey",
+    confirmTone: "danger",
+    tone: "danger"
+  });
+  if (!confirmed) return;
   try {
     const resp = await fetch('/auth/webauthn/credentials/' + credId, {
       method: 'DELETE', headers: { 'X-CSRF-Token': getCsrf() }
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    toast('Passkey "' + name + '" deleted.', { tone: "success", title: "Passkey removed" });
     await loadPasskeys();
   } catch (err) {
     setStatus('Delete failed: ' + err.message, true);
+    toast('Delete failed: ' + err.message, { tone: "error", title: "Passkey delete failed" });
   }
 }
 

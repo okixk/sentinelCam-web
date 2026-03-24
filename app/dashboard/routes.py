@@ -13,7 +13,9 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import User, check_csrf, require_admin
 from app.config import settings
 from app.database import get_db
+from app.proxy.routes import get_worker_proxy_status
 from app.security import hash_password
+from app.thumbnail_jobs import get_thumbnail_job_stats
 
 log = logging.getLogger("sentinelCam.dashboard")
 router = APIRouter(tags=["dashboard"])
@@ -28,7 +30,7 @@ def _audit(event: str, **kwargs) -> None:
 
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, user: User = Depends(require_admin)):
-    return templates.TemplateResponse("admin.html", {"request": request, "user": user})
+    return templates.TemplateResponse(request, "admin.html", {"request": request, "user": user})
 
 
 @router.get("/api/admin/users")
@@ -135,7 +137,11 @@ async def update_user(
 
         if body.password is not None:
             pw_hash = hash_password(body.password)
-            await conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pw_hash, user_id))
+            await conn.execute(
+                "UPDATE users SET password_hash = ?, failed_login_attempts = 0, locked_until = NULL WHERE id = ?",
+                (pw_hash, user_id),
+            )
+            await conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             _audit("admin.user.password_reset", admin=admin.username, target=row["username"])
 
         await conn.commit()
@@ -195,3 +201,13 @@ async def revoke_session(
 
     _audit("admin.session.revoke", admin=admin.username, session_id=session_id)
     return JSONResponse({"ok": True})
+
+
+@router.get("/api/admin/ops")
+async def admin_ops(admin: User = Depends(require_admin)):
+    return JSONResponse(
+        {
+            "thumbnail": get_thumbnail_job_stats(),
+            "worker": get_worker_proxy_status(),
+        }
+    )

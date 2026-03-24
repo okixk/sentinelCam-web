@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -10,7 +12,7 @@ class Settings(BaseSettings):
     # Web-Server
     web_host: str = "127.0.0.1"
     web_port: int = 3000
-    public: bool = False
+    public: bool = Field(default=False, validation_alias=AliasChoices("SC_PUBLIC"))
 
     # Auth
     secret_key: str = ""  # auto-generated if empty, but should be set in production
@@ -30,14 +32,32 @@ class Settings(BaseSettings):
     storage_quota_per_user_mb: int = 500
 
     # Initial Admin
-    initial_admin_user: str = ""
-    initial_admin_password: str = ""
+    initial_admin_user: str = Field(default="", validation_alias=AliasChoices("INITIAL_ADMIN_USER", "ADMIN_USER"))
+    initial_admin_password: str = Field(default="", validation_alias=AliasChoices("INITIAL_ADMIN_PASSWORD", "ADMIN_PASSWORD"))
 
     # Paths
     database_path: str = "data/sentinelcam.db"
     recordings_path: str = "data/recordings"
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    @field_validator(
+        "worker_base_url",
+        "worker_token",
+        "secret_key",
+        "webauthn_rp_id",
+        "webauthn_rp_name",
+        "initial_admin_user",
+        "initial_admin_password",
+        "database_path",
+        "recordings_path",
+        mode="before",
+    )
+    @classmethod
+    def strip_string_values(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    model_config = {"env_file": ".env", "extra": "ignore", "validate_assignment": True}
 
 
 settings = Settings()

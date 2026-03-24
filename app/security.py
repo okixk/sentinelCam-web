@@ -47,22 +47,45 @@ class LoginRateLimiter:
         self._max = max_attempts
         self._window = window_seconds
         self._store: dict[str, list[float]] = {}
+        self._last_sweep = 0.0
+
+    def _prune_attempts(self, ip: str, now: float) -> list[float]:
+        attempts = [t for t in self._store.get(ip, []) if now - t < self._window]
+        if attempts:
+            self._store[ip] = attempts
+        else:
+            self._store.pop(ip, None)
+        return attempts
+
+    def _sweep(self, now: float) -> None:
+        if now - self._last_sweep < min(60, self._window):
+            return
+        cutoff = now - self._window
+        for ip, attempts in list(self._store.items()):
+            remaining = [t for t in attempts if t >= cutoff]
+            if remaining:
+                self._store[ip] = remaining
+            else:
+                self._store.pop(ip, None)
+        self._last_sweep = now
 
     def is_allowed(self, ip: str) -> bool:
         now = time.time()
-        attempts = [t for t in self._store.get(ip, []) if now - t < self._window]
-        self._store[ip] = attempts
+        self._sweep(now)
+        attempts = self._prune_attempts(ip, now)
         return len(attempts) < self._max
 
     def record_attempt(self, ip: str) -> None:
         now = time.time()
-        attempts = [t for t in self._store.get(ip, []) if now - t < self._window]
+        self._sweep(now)
+        attempts = self._prune_attempts(ip, now)
         attempts.append(now)
         self._store[ip] = attempts
 
     def remaining(self, ip: str) -> int:
         now = time.time()
-        attempts = [t for t in self._store.get(ip, []) if now - t < self._window]
+        self._sweep(now)
+        attempts = self._prune_attempts(ip, now)
         return max(0, self._max - len(attempts))
 
 

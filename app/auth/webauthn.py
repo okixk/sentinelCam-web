@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Optional
 
 import webauthn
@@ -19,15 +20,33 @@ log = logging.getLogger("sentinelCam.webauthn")
 
 # Temporary in-memory challenge store (session-based in practice)
 # Key: session_id or username, Value: challenge bytes
-_pending_challenges: dict[str, bytes] = {}
+_CHALLENGE_TTL_SECONDS = 300
+_pending_challenges: dict[str, tuple[bytes, float]] = {}
+
+
+def _purge_expired_challenges(now: float | None = None) -> None:
+    current = time.time() if now is None else now
+    for key, (_challenge, expires_at) in list(_pending_challenges.items()):
+        if expires_at <= current:
+            _pending_challenges.pop(key, None)
 
 
 def store_challenge(key: str, challenge: bytes) -> None:
-    _pending_challenges[key] = challenge
+    now = time.time()
+    _purge_expired_challenges(now)
+    _pending_challenges[key] = (challenge, now + _CHALLENGE_TTL_SECONDS)
 
 
 def pop_challenge(key: str) -> Optional[bytes]:
-    return _pending_challenges.pop(key, None)
+    now = time.time()
+    _purge_expired_challenges(now)
+    entry = _pending_challenges.pop(key, None)
+    if not entry:
+        return None
+    challenge, expires_at = entry
+    if expires_at <= now:
+        return None
+    return challenge
 
 
 def get_rp_id(request_host: str) -> str:

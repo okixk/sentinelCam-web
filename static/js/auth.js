@@ -10,11 +10,18 @@ function showError(msg) {
 
 function hideError() {
   const el = document.getElementById("error-msg");
-  if (el) el.style.display = "none";
+  if (el) {
+    el.style.display = "none";
+    el.textContent = "";
+  }
 }
 
 const loginForm = document.getElementById("login-form");
 if (loginForm) {
+  const usernameInput = document.getElementById("username");
+  const passwordInput = document.getElementById("password");
+  if (usernameInput) usernameInput.addEventListener("input", hideError);
+  if (passwordInput) passwordInput.addEventListener("input", hideError);
   loginForm.addEventListener("submit", async event => {
     event.preventDefault();
     hideError();

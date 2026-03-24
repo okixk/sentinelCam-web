@@ -5,7 +5,6 @@
   <section class="page-hero">
     <div class="page-title-group">
       <h1>Live stream</h1>
-      <p class="page-lead">Watch the feed, capture a frame, or record a clip.</p>
     </div>
     <div class="hero-side">
       <div id="workerHealthBadge" class="status-badge" data-state="connecting">
@@ -24,7 +23,6 @@
               <div class="spinner"></div>
               <div>
                 <div id="busyTitle">Switching model...</div>
-                <div class="small">The worker applies the command after the new model finishes loading.</div>
               </div>
             </div>
             <div class="progress"></div>
@@ -36,12 +34,9 @@
       </div>
 
       <div class="stream-toolbar">
-        <div>
-          <h2>Viewer</h2>
-        </div>
         <div class="stream-actions">
-          <button id="capture-btn" data-action="capture">Capture frame</button>
-          <button id="record-btn" data-action="record">Record clip</button>
+          <button id="capture-btn" data-action="capture">Capture</button>
+          <button id="record-btn" data-action="record">Record</button>
           <span id="record-timer" class="record-timer"></span>
         </div>
       </div>
@@ -57,7 +52,6 @@
           <div>
             <h2>Worker status</h2>
           </div>
-          <span class="panel-tag">Live</span>
         </div>
         <div id="state" class="state-chips">
           <div class="chip">Connection: <strong id="stateConnection">Proxy</strong></div>
@@ -70,28 +64,108 @@
           <div class="chip">FPS: <strong id="stateFps">-</strong></div>
           <div class="chip">Inference: <strong id="stateInference">-</strong></div>
         </div>
-        <div class="note-block">
-          <div id="streamModeNote" class="small">WebRTC first, MJPEG fallback if needed.</div>
-        </div>
+        <div id="streamModeNote" class="small">WebRTC first, MJPEG fallback if needed.</div>
         <div class="control-grid">
+          {% if user.role == 'admin' %}
           <div class="row">
-            <button id="btnPrev" data-action="cmd" data-cmd="n" data-busy="Switching to previous model..." class="secondary">Previous model</button>
-            <button id="btnNext" data-action="cmd" data-cmd="m" data-busy="Switching to next model..." class="secondary">Next model</button>
-            <button data-action="cmd" data-cmd="p" class="secondary">Toggle pose</button>
-            <button data-action="cmd" data-cmd="o" class="secondary">Toggle overlay</button>
-            <button data-action="cmd" data-cmd="i" class="secondary">Toggle inference</button>
-            <button data-action="cmd" data-cmd="q" class="danger">Stop worker</button>
+            <button id="btnPrev" data-action="cmd" data-cmd="n" data-busy="Switching to previous model..." class="secondary">Prev</button>
+            <button id="btnNext" data-action="cmd" data-cmd="m" data-busy="Switching to next model..." class="secondary">Next</button>
+            <button data-action="cmd" data-cmd="p" class="secondary">Pose</button>
+            <button data-action="cmd" data-cmd="o" class="secondary">Overlay</button>
+            <button data-action="cmd" data-cmd="i" class="secondary">Infer</button>
+            <button data-action="cmd" data-cmd="q" class="danger">Stop</button>
           </div>
+          {% endif %}
           <button id="btnConnect" data-action="connect" class="secondary">Reconnect</button>
-          <input id="base" type="hidden" value="/" aria-hidden="true" />
         </div>
+      </section>
+
+      <section class="panel info-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Connection</h2>
+          </div>
+        </div>
+        <div class="connection-form">
+          <div class="field compact-field">
+            <label for="connection-mode">Connection mode</label>
+            <select id="connection-mode">
+              <option value="proxy">Proxy</option>
+              <option value="direct">Direct worker URL</option>
+            </select>
+          </div>
+          <div class="field compact-field">
+            <label for="base">Worker base URL</label>
+            <input id="base" type="text" value="/" spellcheck="false" autocomplete="off" inputmode="url" />
+          </div>
+          <div class="connection-actions">
+            <div class="small connection-target">
+              Target:
+              <strong id="resolvedTarget">/</strong>
+            </div>
+          </div>
+        </div>
+        <div id="connectionNote" class="small">Use proxy first. Switch to direct only if needed.</div>
+        <div id="troubleSummary" class="small">
+          Proxy handles auth and CORS. Direct can help with local routing issues.
+        </div>
+        <div class="trouble-grid">
+          <div id="trouble-step-route" class="trouble-step" data-state="pending">
+            <strong>1. Route</strong>
+            <div id="trouble-routeDetail" class="small">Choose proxy or direct mode first.</div>
+          </div>
+          <div id="trouble-step-state" class="trouble-step" data-state="pending">
+            <strong>2. State API</strong>
+            <div id="trouble-stateDetail" class="small">The page checks whether `/api/state` is reachable.</div>
+          </div>
+          <div id="trouble-step-webrtc" class="trouble-step" data-state="pending">
+            <strong>3. WebRTC</strong>
+            <div id="trouble-webrtcDetail" class="small">The player tries WebRTC first for the live feed.</div>
+          </div>
+          <div id="trouble-step-video" class="trouble-step" data-state="pending">
+            <strong>4. Video path</strong>
+            <div id="trouble-videoDetail" class="small">If WebRTC fails, the page falls back to MJPEG when possible.</div>
+          </div>
+        </div>
+        <details class="connection-details">
+          <summary>Technical details</summary>
+          <dl class="diag-grid">
+            <div>
+              <dt>Page origin</dt>
+              <dd id="techPageOrigin">-</dd>
+            </div>
+            <div>
+              <dt>Worker target</dt>
+              <dd id="techTarget">-</dd>
+            </div>
+            <div>
+              <dt>Backend hint</dt>
+              <dd id="techBackend">-</dd>
+            </div>
+            <div>
+              <dt>WebRTC</dt>
+              <dd id="techWebRtc">-</dd>
+            </div>
+            <div>
+              <dt>MJPEG</dt>
+              <dd id="techMjpeg">-</dd>
+            </div>
+            <div>
+              <dt>Last status</dt>
+              <dd id="techLastStatus">-</dd>
+            </div>
+            <div class="diag-span">
+              <dt>Last error</dt>
+              <dd id="techLastError">None</dd>
+            </div>
+          </dl>
+        </details>
       </section>
 
       <section class="panel">
         <div class="panel-header">
           <div>
             <h2>Passkeys</h2>
-            <p>Optional faster sign-in on this device.</p>
           </div>
         </div>
         <div id="passkeys-list" class="inline-list">Loading...</div>
@@ -100,5 +174,5 @@
     </aside>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/stream.js?v=20260320b"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/stream.js?v=20260323j"></script>
 {% endblock %}

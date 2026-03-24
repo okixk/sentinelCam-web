@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from app.auth.dependencies import User, check_csrf, get_current_user
 from app.config import settings
 from app.database import get_db
+from app.thumbnail_jobs import ensure_thumbnail_from_row, schedule_thumbnail_warmup
 
 log = logging.getLogger("sentinelCam.recording")
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
@@ -53,6 +54,32 @@ def _get_recordings_dir(user_id: int) -> Path:
     return p
 
 
+async def _save_upload_file(upload: UploadFile, destination: Path, max_bytes: int, sniff_bytes: int = 32) -> tuple[int, bytes]:
+    total = 0
+    head = bytearray()
+
+    try:
+        with destination.open("wb") as f:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(413, f"File too large (max {settings.max_upload_size_mb} MB)")
+                if len(head) < sniff_bytes:
+                    need = sniff_bytes - len(head)
+                    head.extend(chunk[:need])
+                f.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.close()
+
+    return total, bytes(head)
+
+
 @router.post("/upload")
 async def upload_recording(
     request: Request,
@@ -68,11 +95,6 @@ async def upload_recording(
 
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
 
-    # Read overlay file
-    overlay_data = await overlay_file.read(max_bytes + 1)
-    if len(overlay_data) > max_bytes:
-        raise HTTPException(413, f"File too large (max {settings.max_upload_size_mb} MB)")
-
     # Determine MIME type
     overlay_mime = overlay_file.content_type or ""
     if type == "image" and overlay_mime not in ALLOWED_MIME_IMAGE:
@@ -80,30 +102,36 @@ async def upload_recording(
     if type == "video" and overlay_mime not in ALLOWED_MIME_VIDEO:
         overlay_mime = "video/webm"
 
-    if not _check_magic_bytes(overlay_data, overlay_mime):
-        raise HTTPException(400, "File content does not match expected type")
-
     rec_dir = _get_recordings_dir(user.id)
     file_uuid = str(uuid.uuid4()).replace("-", "")
     ext = EXTENSION_MAP.get(overlay_mime, "bin")
     overlay_filename = f"{file_uuid}.{ext}"
     overlay_path = rec_dir / overlay_filename
-    overlay_path.write_bytes(overlay_data)
+
+    overlay_size, overlay_head = await _save_upload_file(overlay_file, overlay_path, max_bytes)
+    if not _check_magic_bytes(overlay_head, overlay_mime):
+        overlay_path.unlink(missing_ok=True)
+        raise HTTPException(400, "File content does not match expected type")
 
     raw_filename = None
-    if raw_file and type == "image":
-        raw_data = await raw_file.read(max_bytes + 1)
-        if len(raw_data) <= max_bytes:
-            raw_mime = raw_file.content_type or "image/jpeg"
-            if raw_mime in ALLOWED_MIME_IMAGE and _check_magic_bytes(raw_data, raw_mime):
-                raw_uuid = str(uuid.uuid4()).replace("-", "")
-                raw_ext = EXTENSION_MAP.get(raw_mime, "jpg")
-                raw_filename = f"{raw_uuid}_raw.{raw_ext}"
-                raw_path = rec_dir / raw_filename
-                raw_path.write_bytes(raw_data)
+    raw_size = 0
+    if raw_file:
+        raw_mime = raw_file.content_type or ("image/jpeg" if type == "image" else overlay_mime or "video/webm")
+        allowed_mimes = ALLOWED_MIME_IMAGE if type == "image" else ALLOWED_MIME_VIDEO
+        if raw_mime in allowed_mimes:
+            raw_uuid = str(uuid.uuid4()).replace("-", "")
+            raw_ext = EXTENSION_MAP.get(raw_mime, "jpg" if type == "image" else "webm")
+            candidate_raw_filename = f"{raw_uuid}_raw.{raw_ext}"
+            candidate_raw_path = rec_dir / candidate_raw_filename
+            raw_size, raw_head = await _save_upload_file(raw_file, candidate_raw_path, max_bytes)
+            if _check_magic_bytes(raw_head, raw_mime):
+                raw_filename = candidate_raw_filename
+            else:
+                candidate_raw_path.unlink(missing_ok=True)
+                raw_size = 0
 
     quota_bytes = settings.storage_quota_per_user_mb * 1024 * 1024
-    add_bytes = len(overlay_data)
+    add_bytes = overlay_size + raw_size
 
     async with get_db() as conn:
         # Quota check inside the same transaction to prevent race conditions
@@ -138,6 +166,7 @@ async def upload_recording(
         await conn.commit()
 
     _audit("recording.upload", username=user.username, type=type, id=new_row["id"])
+    schedule_thumbnail_warmup([new_row["id"]])
     return JSONResponse({"ok": True, "id": new_row["id"]}, status_code=201)
 
 
@@ -148,6 +177,7 @@ async def list_recordings(
     per_page: int = 20,
     type: Optional[str] = None,
     sort: str = "newest",
+    q: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
     if page < 1:
@@ -156,6 +186,7 @@ async def list_recordings(
         per_page = 20
     offset = (page - 1) * per_page
     order = "DESC" if sort != "oldest" else "ASC"
+    q = (q or "").strip()[:80]
 
     conditions = []
     params: list = []
@@ -168,13 +199,25 @@ async def list_recordings(
         conditions.append("r.type = ?")
         params.append(type)
 
+    if q:
+        like = f"%{q.lower()}%"
+        conditions.append(
+            "("
+            "CAST(r.id AS TEXT) LIKE ? OR "
+            "LOWER(r.type) LIKE ? OR "
+            "LOWER(COALESCE(u.username, '')) LIKE ? OR "
+            "LOWER(COALESCE(r.filename, '')) LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like])
+
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params_count = list(params)
     params.extend([per_page, offset])
 
     async with get_db() as conn:
         cursor = await conn.execute(
-            f"SELECT COUNT(*) FROM recordings r {where}",
+            f"SELECT COUNT(*) FROM recordings r JOIN users u ON r.user_id = u.id {where}",
             params_count,
         )
         total_row = await cursor.fetchone()
@@ -184,10 +227,12 @@ async def list_recordings(
             f"SELECT r.id, r.type, r.filename, r.overlay_filename, r.raw_filename, "
             f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, u.username "
             f"FROM recordings r JOIN users u ON r.user_id = u.id {where} "
-            f"ORDER BY r.created_at {order} LIMIT ? OFFSET ?",
+            f"ORDER BY r.created_at {order}, r.id {order} LIMIT ? OFFSET ?",
             params,
         )
         rows = await cursor.fetchall()
+
+    schedule_thumbnail_warmup(int(r["id"]) for r in rows[: min(len(rows), 12)])
 
     return JSONResponse({
         "items": [dict(r) for r in rows],
@@ -255,7 +300,7 @@ async def serve_recording_file(
 async def serve_thumbnail(recording_id: int, user: User = Depends(get_current_user)):
     async with get_db() as conn:
         cursor = await conn.execute(
-            "SELECT r.user_id, r.filename, r.overlay_filename, r.type, r.shared FROM recordings r WHERE r.id = ?",
+            "SELECT r.id, r.user_id, r.filename, r.overlay_filename, r.type, r.shared FROM recordings r WHERE r.id = ?",
             (recording_id,),
         )
         row = await cursor.fetchone()
@@ -264,24 +309,18 @@ async def serve_thumbnail(recording_id: int, user: User = Depends(get_current_us
     if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
         raise HTTPException(404, "Recording not found")
 
-    fname = row["overlay_filename"] or row["filename"]
-    rec_dir = Path(settings.recordings_path) / str(row["user_id"])
-    src_path = rec_dir / fname
-    thumb_path = rec_dir / f"thumb_{fname.rsplit('.', 1)[0]}.jpg"
-
-    if not src_path.exists():
+    try:
+        thumb_path = await ensure_thumbnail_from_row(row)
+    except FileNotFoundError:
         raise HTTPException(404, "File not found")
+    except Exception as e:
+        raise HTTPException(500, f"Thumbnail generation failed: {e}")
 
-    if not thumb_path.exists():
-        try:
-            from PIL import Image
-            with Image.open(src_path) as img:
-                img.thumbnail((200, 200))
-                img.save(str(thumb_path), "JPEG", quality=85)
-        except Exception as e:
-            raise HTTPException(500, f"Thumbnail generation failed: {e}")
-
-    return FileResponse(str(thumb_path), media_type="image/jpeg")
+    return FileResponse(
+        str(thumb_path),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.delete("/{recording_id}")

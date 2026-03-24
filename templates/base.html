@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}sentinelCam{% endblock %}</title>
   <link rel="icon" type="image/png" href="/static/branding/favicon.png" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260320c">
+  <link rel="stylesheet" href="/static/css/style.css?v=20260323d">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -33,6 +33,29 @@
   <main class="main-content">
     {% block content %}{% endblock %}
   </main>
+  <div id="app-toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <div id="app-dialog-modal" class="modal-backdrop app-dialog-backdrop" hidden aria-hidden="true">
+    <div class="modal-card app-dialog-card" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="app-dialog-title">Confirm action</h2>
+          <p id="app-dialog-message" class="modal-subtitle"></p>
+        </div>
+        <button type="button" class="ghost modal-close" data-action="cancel-app-dialog">Close</button>
+      </div>
+      <form id="app-dialog-form">
+        <div id="app-dialog-input-wrap" class="field" hidden>
+          <label id="app-dialog-input-label" for="app-dialog-input">Value</label>
+          <input id="app-dialog-input" type="text" autocomplete="off" />
+        </div>
+        <p id="app-dialog-feedback" class="modal-feedback small" aria-live="polite"></p>
+        <div class="row modal-actions">
+          <button type="button" class="secondary" data-action="cancel-app-dialog">Cancel</button>
+          <button type="submit" id="app-dialog-confirm">Continue</button>
+        </div>
+      </form>
+    </div>
+  </div>
   <script nonce="{{ request.state.csp_nonce }}">
     function getCsrf() {
       return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || "";
@@ -104,10 +127,189 @@
       });
     }
 
+    const appToastHost = document.getElementById("app-toast-stack");
+    const appDialogModal = document.getElementById("app-dialog-modal");
+    const appDialogForm = document.getElementById("app-dialog-form");
+    const appDialogTitle = document.getElementById("app-dialog-title");
+    const appDialogMessage = document.getElementById("app-dialog-message");
+    const appDialogInputWrap = document.getElementById("app-dialog-input-wrap");
+    const appDialogInput = document.getElementById("app-dialog-input");
+    const appDialogInputLabel = document.getElementById("app-dialog-input-label");
+    const appDialogFeedback = document.getElementById("app-dialog-feedback");
+    const appDialogConfirm = document.getElementById("app-dialog-confirm");
+    let appDialogResolver = null;
+    let appDialogActiveMode = "confirm";
+
+    function ensureAppDialogClosed(result) {
+      if (!appDialogModal) return;
+      appDialogModal.hidden = true;
+      appDialogModal.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("modal-open");
+      const resolver = appDialogResolver;
+      appDialogResolver = null;
+      appDialogActiveMode = "confirm";
+      if (appDialogInput) {
+        appDialogInput.value = "";
+      }
+      if (appDialogFeedback) {
+        appDialogFeedback.textContent = "";
+        appDialogFeedback.className = "modal-feedback small";
+      }
+      if (typeof resolver === "function") {
+        resolver(result);
+      }
+    }
+
+    function showToast(message, options = {}) {
+      if (!appToastHost) return null;
+      const tone = options.tone || "neutral";
+      const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : (tone === "error" ? 5200 : tone === "warn" ? 4200 : 3400);
+      const toast = document.createElement("div");
+      toast.className = "toast";
+      toast.dataset.tone = tone;
+      toast.innerHTML = `
+        <div class="toast-copy">
+          ${options.title ? `<strong class="toast-title"></strong>` : ""}
+          <span class="toast-message"></span>
+        </div>
+        <button type="button" class="toast-close ghost" aria-label="Dismiss notification">×</button>
+      `;
+      if (options.title) {
+        toast.querySelector(".toast-title").textContent = options.title;
+      }
+      toast.querySelector(".toast-message").textContent = message || "";
+      const closeBtn = toast.querySelector(".toast-close");
+      let toastTimer = null;
+      const dismiss = () => {
+        if (toastTimer) window.clearTimeout(toastTimer);
+        toast.classList.remove("show");
+        window.setTimeout(() => toast.remove(), 180);
+      };
+      closeBtn.addEventListener("click", dismiss);
+      appToastHost.appendChild(toast);
+      window.requestAnimationFrame(() => toast.classList.add("show"));
+      toastTimer = window.setTimeout(dismiss, timeoutMs);
+      return toast;
+    }
+
+    function openAppDialog(options = {}) {
+      if (!appDialogModal || !appDialogForm || !appDialogConfirm) {
+        return Promise.resolve(options.mode === "prompt" ? null : false);
+      }
+
+      const mode = options.mode === "prompt" ? "prompt" : "confirm";
+      appDialogActiveMode = mode;
+      appDialogResolver = null;
+
+      if (appDialogTitle) {
+        appDialogTitle.textContent = options.title || (mode === "prompt" ? "Enter value" : "Confirm action");
+      }
+      if (appDialogMessage) {
+        appDialogMessage.textContent = options.message || "";
+      }
+      if (appDialogInputWrap && appDialogInput && appDialogInputLabel) {
+        const showInput = mode === "prompt";
+        appDialogInputWrap.hidden = !showInput;
+        if (showInput) {
+          appDialogInputLabel.textContent = options.inputLabel || "Value";
+          appDialogInput.placeholder = options.placeholder || "";
+          appDialogInput.value = options.value ?? "";
+          appDialogInput.required = options.required !== false;
+        } else {
+          appDialogInput.required = false;
+          appDialogInput.value = "";
+        }
+      }
+      if (appDialogFeedback) {
+        appDialogFeedback.textContent = options.feedback || "";
+        appDialogFeedback.className = "modal-feedback small";
+      }
+      if (appDialogConfirm) {
+        appDialogConfirm.textContent = options.confirmLabel || (mode === "prompt" ? "Save" : "Continue");
+        appDialogConfirm.dataset.tone = options.confirmTone || (options.tone || (mode === "prompt" ? "primary" : "danger"));
+      }
+      const cancelLabel = options.cancelLabel || "Cancel";
+      document.querySelectorAll("[data-action='cancel-app-dialog']").forEach(button => {
+        button.textContent = cancelLabel;
+      });
+      appDialogModal.hidden = false;
+      appDialogModal.setAttribute("aria-hidden", "false");
+      document.body.classList.add("modal-open");
+
+      return new Promise(resolve => {
+        appDialogResolver = resolve;
+        window.requestAnimationFrame(() => {
+          if (mode === "prompt" && appDialogInput) {
+            appDialogInput.focus();
+            if (typeof appDialogInput.select === "function") {
+              appDialogInput.select();
+            }
+            return;
+          }
+          appDialogConfirm.focus();
+        });
+      });
+    }
+
+    function closeAppDialog(result = null) {
+      ensureAppDialogClosed(result);
+    }
+
+    async function confirmAction(options = {}) {
+      return Boolean(await openAppDialog({ ...options, mode: "confirm" }));
+    }
+
+    async function promptAction(options = {}) {
+      const result = await openAppDialog({ ...options, mode: "prompt" });
+      if (result === null || result === false) return null;
+      return String(result);
+    }
+
+    if (appDialogForm) {
+      appDialogForm.addEventListener("submit", event => {
+        event.preventDefault();
+        if (appDialogActiveMode === "prompt") {
+          const value = appDialogInput ? appDialogInput.value.trim() : "";
+          if (appDialogInput && appDialogInput.required && !value) {
+            if (appDialogFeedback) {
+              appDialogFeedback.textContent = "Please enter a value to continue.";
+              appDialogFeedback.className = "modal-feedback small error";
+            }
+            appDialogInput?.focus();
+            return;
+          }
+          ensureAppDialogClosed(value);
+          return;
+        }
+        ensureAppDialogClosed(true);
+      });
+    }
+
+    if (appDialogModal) {
+      appDialogModal.addEventListener("click", event => {
+        if (event.target === appDialogModal || event.target.closest("[data-action='cancel-app-dialog']")) {
+          ensureAppDialogClosed(appDialogActiveMode === "prompt" ? null : false);
+        }
+      });
+    }
+
+    document.addEventListener("keydown", event => {
+      if (!appDialogModal || appDialogModal.hidden) return;
+      if (event.key === "Escape") {
+        ensureAppDialogClosed(appDialogActiveMode === "prompt" ? null : false);
+      }
+    });
+
     const logoutBtn = document.getElementById("logout-btn");
     if (logoutBtn) logoutBtn.addEventListener("click", logout);
     populateAppOrigin();
     initCopyButtons();
+    window.AppUI = {
+      toast: showToast,
+      confirm: confirmAction,
+      prompt: promptAction,
+      closeDialog: closeAppDialog
+    };
   </script>
   {% block scripts %}{% endblock %}
 </body>

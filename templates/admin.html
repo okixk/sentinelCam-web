@@ -4,17 +4,7 @@
 <div class="page">
   <section class="page-hero">
     <div class="page-title-group">
-      <span class="eyebrow">Administration</span>
-      <h1>Users, sessions, and worker operations</h1>
-      <p class="page-lead">
-        Use this page to manage accounts, revoke active sessions, and keep the worker healthy without leaving the app.
-      </p>
-    </div>
-    <div class="hero-side">
-      <div class="status-badge" data-state="neutral">
-        <span class="status-dot"></span>
-        <span>Admin session</span>
-      </div>
+      <h1>Admin</h1>
     </div>
   </section>
 
@@ -23,17 +13,15 @@
       <div class="panel-header">
         <div>
           <h2>Worker status</h2>
-          <p>Quick visibility into the active preset, stream backend, and inference state.</p>
         </div>
-        <span class="panel-tag">Polling</span>
       </div>
       <div id="worker-status" class="loading-state">Loading...</div>
       <div class="row" style="margin-top:12px;">
-        <button data-action="admin-cmd" data-cmd="n" data-label="Prev model" class="secondary">Previous model</button>
-        <button data-action="admin-cmd" data-cmd="m" data-label="Next model" class="secondary">Next model</button>
-        <button data-action="admin-cmd" data-cmd="p" data-label="Toggle pose" class="secondary">Toggle pose</button>
-        <button data-action="admin-cmd" data-cmd="o" data-label="Toggle overlay" class="secondary">Toggle overlay</button>
-        <button data-action="admin-cmd" data-cmd="i" data-label="Toggle inference" class="secondary">Toggle inference</button>
+        <button data-action="admin-cmd" data-cmd="n" data-label="Prev model" class="secondary">Prev</button>
+        <button data-action="admin-cmd" data-cmd="m" data-label="Next model" class="secondary">Next</button>
+        <button data-action="admin-cmd" data-cmd="p" data-label="Toggle pose" class="secondary">Pose</button>
+        <button data-action="admin-cmd" data-cmd="o" data-label="Toggle overlay" class="secondary">Overlay</button>
+        <button data-action="admin-cmd" data-cmd="i" data-label="Toggle inference" class="secondary">Infer</button>
       </div>
     </div>
 
@@ -41,15 +29,14 @@
       <div class="panel-header">
         <div>
           <h2>Users</h2>
-          <p>Create, promote, demote, or remove local accounts.</p>
         </div>
       </div>
       <div id="users-table" class="loading-state">Loading...</div>
       <hr>
       <h3>Create user</h3>
       <form id="create-user-form">
-        <div class="field"><label>Username</label><input id="new-username" required /></div>
-        <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" required /></div>
+        <div class="field"><label>Username</label><input id="new-username" autocomplete="username" required /></div>
+        <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" autocomplete="new-password" required /></div>
         <div class="field">
           <label>Role</label>
           <select id="new-role">
@@ -65,7 +52,6 @@
       <div class="panel-header">
         <div>
           <h2>Active sessions</h2>
-          <p>Revoke sessions when a browser should lose access immediately.</p>
         </div>
       </div>
       <div id="sessions-table" class="loading-state">Loading...</div>
@@ -74,8 +60,7 @@
     <div class="panel">
       <div class="panel-header">
         <div>
-          <h2>My passkeys</h2>
-          <p>Passkeys registered here are also available from the standard login page.</p>
+          <h2>Passkeys</h2>
         </div>
       </div>
       <div id="passkeys-list" class="loading-state">Loading...</div>
@@ -85,13 +70,48 @@
     <div class="panel">
       <div class="panel-header">
         <div>
-          <h2>Worker startup</h2>
-          <p>Operational entry points live here instead of the regular user stream page.</p>
+          <h2>Startup</h2>
         </div>
       </div>
       <div id="system-info" class="stack-notes loading-state">Loading...</div>
     </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Operations</h2>
+        </div>
+      </div>
+      <div id="ops-status" class="stack-notes loading-state">Loading...</div>
+    </div>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260320c"></script>
+<div id="password-reset-modal" class="modal-backdrop" hidden aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="password-reset-title">
+    <div class="modal-head">
+      <div>
+        <h2 id="password-reset-title">Reset password</h2>
+        <p class="modal-subtitle"><strong id="password-reset-username"></strong></p>
+      </div>
+      <button type="button" class="ghost modal-close" data-action="cancel-password-reset">Close</button>
+    </div>
+    <form id="password-reset-form">
+      <input id="password-reset-username-input" type="text" autocomplete="username" tabindex="-1" hidden />
+      <div class="field">
+        <label for="password-reset-password">New password</label>
+        <input id="password-reset-password" type="password" autocomplete="new-password" minlength="12" required />
+      </div>
+      <div class="field">
+        <label for="password-reset-confirm">Confirm new password</label>
+        <input id="password-reset-confirm" type="password" autocomplete="new-password" minlength="12" required />
+      </div>
+      <p id="password-reset-feedback" class="modal-feedback small" aria-live="polite"></p>
+      <div class="row modal-actions">
+        <button type="button" class="secondary" data-action="cancel-password-reset">Cancel</button>
+        <button type="submit" id="password-reset-submit">Update password</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260323f"></script>
 {% endblock %}
