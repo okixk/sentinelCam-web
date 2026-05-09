@@ -10,6 +10,19 @@ const WEBRTC_RETRY_DELAY_MS = 2000;
 const MJPEG_PROBE_TIMEOUT_MS = 5000;
 const RAW_RECORD_SETUP_TIMEOUT_MS = 4000;
 const RAW_RECORD_FPS_FALLBACK = 15;
+const ALERT_NOTIFY_ENABLED_KEY = "sentinelcam.alerts.notify.enabled";
+const ALERT_NOTIFY_COOLDOWN_KEY = "sentinelcam.alerts.notify.cooldown";
+const PRE_EVENT_ENABLED_KEY = "sentinelcam.alerts.pre_event.enabled";
+const PRE_EVENT_SECONDS_KEY = "sentinelcam.alerts.pre_event.seconds";
+const CAPTURE_DESCRIPTIONS_KEY = "sentinelcam.capture.descriptions.enabled";
+const STREAM_CONNECTION_MODE_KEY = "sentinelcam.stream.connection.mode";
+const STREAM_DIRECT_BASE_KEY = "sentinelcam.stream.direct_base";
+const CONTEXT_TRIGGER_KEY = "sentinelcam.context.trigger";
+const CONTEXT_COOLDOWN_KEY = "sentinelcam.context.cooldown";
+const CONTEXT_PROFILE_KEY = "sentinelcam.context.profile";
+const CONTEXT_MODEL_KEY = "sentinelcam.context.model";
+const LEGACY_CONTEXT_NOTIFY_ENABLED_KEY = "sentinelcam.context.notify.enabled";
+const LEGACY_CONTEXT_NOTIFY_COOLDOWN_KEY = "sentinelcam.context.notify.cooldown";
 const MODEL_SWITCH_COMMANDS = new Set(["m", "n", "next", "prev", "previous"]);
 const QUIT_COMMANDS = new Set(["q", "quit", "exit", "stop"]);
 const IS_FILE_PROTOCOL = window.location.protocol === "file:";
@@ -47,6 +60,14 @@ let recordMimeType = "video/webm";
 let recordStartTime = null;
 let recordTimerInterval = null;
 let recordStopPromise = null;
+let lastContextUpdatedAt = 0;
+let lastAlertNotificationAt = 0;
+let contextControlsHydrated = false;
+let lastPreEventUploadAt = 0;
+let preEventRecorder = null;
+let preEventChunks = [];
+let preEventMimeType = "";
+let lastWorkerState = null;
 
 const baseInputEl = document.getElementById("base");
 const videoEl = document.getElementById("stream");
@@ -68,8 +89,25 @@ const stateDetEl = document.getElementById("stateDet");
 const statePoseEl = document.getElementById("statePose");
 const stateFpsEl = document.getElementById("stateFps");
 const stateInferenceEl = document.getElementById("stateInference");
+const stateDetectMsEl = document.getElementById("stateDetectMs");
+const statePoseMsEl = document.getElementById("statePoseMs");
+const stateContextEnabledEl = document.getElementById("stateContextEnabled");
+const stateContextTriggerEl = document.getElementById("stateContextTrigger");
+const stateContextProfileEl = document.getElementById("stateContextProfile");
+const stateContextModelEl = document.getElementById("stateContextModel");
+const contextSummaryEl = document.getElementById("contextSummary");
+const contextTriggerEl = document.getElementById("context-trigger");
+const contextCooldownEl = document.getElementById("context-cooldown");
+const contextModelEl = document.getElementById("context-model");
+const contextProfileEl = document.getElementById("context-profile");
+const notificationCooldownEl = document.getElementById("notification-cooldown");
+const notificationToggleEl = document.getElementById("notificationToggle");
+const preEventEnabledEl = document.getElementById("pre-event-enabled");
+const preEventSecondsEl = document.getElementById("pre-event-seconds");
+const captureDescriptionsEl = document.getElementById("capture-descriptions");
 const captureBtn = document.getElementById("capture-btn");
 const recordBtn = document.getElementById("record-btn");
+const fullscreenBtn = document.getElementById("fullscreen-btn");
 const recordTimerEl = document.getElementById("record-timer");
 const workerHealthBadgeEl = document.getElementById("workerHealthBadge");
 const workerHealthTextEl = document.getElementById("workerHealthText");
@@ -155,6 +193,7 @@ function updateBaseInputUi() {
     const currentValue = baseInputEl.value.trim();
     if (currentValue && currentValue !== "/") {
       rememberedDirectBase = currentValue;
+      window.localStorage.setItem(STREAM_DIRECT_BASE_KEY, rememberedDirectBase);
     }
     baseInputEl.readOnly = true;
     baseInputEl.value = "/";
@@ -471,6 +510,7 @@ function showVideo() { hideMedia(); videoEl.classList.add("show"); }
 function showFallback() { hideMedia(); fallbackEl.classList.add("show"); }
 
 function clearVideoStream() {
+  stopPreEventRecorder();
   const stream = videoEl.srcObject;
   if (stream && typeof stream.getTracks === "function") {
     stream.getTracks().forEach(track => track.stop());
@@ -588,12 +628,195 @@ function startCodecPolling() {
   refreshWebRtcMediaLabels().catch(() => {});
 }
 
+function contextTriggerLabel(value) {
+  const labels = {
+    interval: "Every interval",
+    person_appears: "Person appears",
+    person_present: "Person present",
+    manual: "Manual only"
+  };
+  return labels[String(value || "")] || String(value || "-");
+}
+
+function migrateAlertNotificationSettings() {
+  if (window.localStorage.getItem(ALERT_NOTIFY_ENABLED_KEY) === null) {
+    const oldEnabled = window.localStorage.getItem(LEGACY_CONTEXT_NOTIFY_ENABLED_KEY);
+    if (oldEnabled !== null) window.localStorage.setItem(ALERT_NOTIFY_ENABLED_KEY, oldEnabled);
+  }
+  if (window.localStorage.getItem(ALERT_NOTIFY_COOLDOWN_KEY) === null) {
+    const oldCooldown = window.localStorage.getItem(LEGACY_CONTEXT_NOTIFY_COOLDOWN_KEY);
+    if (oldCooldown !== null) window.localStorage.setItem(ALERT_NOTIFY_COOLDOWN_KEY, oldCooldown);
+  }
+}
+
+function getNotificationCooldownSeconds() {
+  const raw = parseInt(notificationCooldownEl?.value || window.localStorage.getItem(ALERT_NOTIFY_COOLDOWN_KEY) || "60", 10);
+  return Number.isFinite(raw) ? Math.max(5, raw) : 60;
+}
+
+function notificationsEnabled() {
+  return window.localStorage.getItem(ALERT_NOTIFY_ENABLED_KEY) === "1";
+}
+
+function preEventEnabled() {
+  return window.localStorage.getItem(PRE_EVENT_ENABLED_KEY) === "1";
+}
+
+function preEventSeconds() {
+  const raw = parseInt(preEventSecondsEl?.value || window.localStorage.getItem(PRE_EVENT_SECONDS_KEY) || "30", 10);
+  return Number.isFinite(raw) ? Math.max(5, Math.min(120, raw)) : 30;
+}
+
+function captureDescriptionsEnabled() {
+  return window.localStorage.getItem(CAPTURE_DESCRIPTIONS_KEY) === "1";
+}
+
+function syncLocalAlertSettings() {
+  if (preEventEnabledEl) preEventEnabledEl.value = preEventEnabled() ? "1" : "0";
+  if (preEventSecondsEl) preEventSecondsEl.value = window.localStorage.getItem(PRE_EVENT_SECONDS_KEY) || "30";
+  if (captureDescriptionsEl) captureDescriptionsEl.value = captureDescriptionsEnabled() ? "1" : "0";
+}
+
+function refreshNotificationButton() {
+  if (!notificationToggleEl) return;
+  const supported = "Notification" in window;
+  if (!supported) {
+    notificationToggleEl.textContent = "Notifications unavailable";
+    notificationToggleEl.disabled = true;
+    return;
+  }
+  const enabled = notificationsEnabled() && Notification.permission === "granted";
+  notificationToggleEl.textContent = enabled ? "Alerts on" : "Alerts off";
+  notificationToggleEl.classList.toggle("secondary", !enabled);
+}
+
+async function toggleNotifications() {
+  if (!("Notification" in window)) {
+    setStatus("Browser notifications are not supported here.", true);
+    return;
+  }
+  if (notificationsEnabled()) {
+    window.localStorage.setItem(ALERT_NOTIFY_ENABLED_KEY, "0");
+    refreshNotificationButton();
+    setStatus("Camera alerts disabled.");
+    return;
+  }
+  const permission = Notification.permission === "granted"
+    ? "granted"
+    : await Notification.requestPermission();
+  if (permission === "granted") {
+    window.localStorage.setItem(ALERT_NOTIFY_ENABLED_KEY, "1");
+    setStatus("Camera alerts enabled.");
+  } else {
+    window.localStorage.setItem(ALERT_NOTIFY_ENABLED_KEY, "0");
+    setStatus("Notification permission was not granted.", true);
+  }
+  refreshNotificationButton();
+}
+
+function contextHasPerson(context) {
+  const objects = Array.isArray(context?.objects) ? context.objects : [];
+  return objects.some(obj => String(obj?.label || "").toLowerCase() === "person");
+}
+
+function buildCameraAlert(context) {
+  const summary = String(context?.summary || "").trim();
+  const personVisible = contextHasPerson(context) || /\b(person|someone|people|man|woman)\b/i.test(summary);
+  const title = personVisible ? "Someone is at the camera" : "Camera alert";
+  let body = personVisible
+    ? "Review the live feed: expected person or possible risk?"
+    : "Review the live feed for a new camera event.";
+  if (summary) body += " " + summary;
+  return { title, body: body.slice(0, 220) };
+}
+
+function maybeNotifyCameraAlert(context) {
+  if (!context || !context.summary) return;
+  const updatedAt = Number(context.updated_at || 0);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0 || updatedAt === lastContextUpdatedAt) return;
+  lastContextUpdatedAt = updatedAt;
+  if (contextHasPerson(context)) triggerPreEventUpload(context).catch(() => {});
+  if (!notificationsEnabled() || !("Notification" in window) || Notification.permission !== "granted") return;
+  const now = Date.now() / 1000;
+  if (now - lastAlertNotificationAt < getNotificationCooldownSeconds()) return;
+  lastAlertNotificationAt = now;
+  const alert = buildCameraAlert(context);
+  try {
+    new Notification(alert.title, {
+      body: alert.body,
+      tag: "sentinelcam-camera-alert",
+      renotify: false,
+      silent: false
+    });
+  } catch (_) {
+    // Browser notification failures should not interrupt stream polling.
+  }
+}
+
+function hydrateContextControls(state) {
+  if (!state || contextControlsHydrated) return;
+  if (contextTriggerEl) contextTriggerEl.value = window.localStorage.getItem(CONTEXT_TRIGGER_KEY) || state.context_trigger || "person_appears";
+  if (contextCooldownEl) {
+    const savedCooldown = window.localStorage.getItem(CONTEXT_COOLDOWN_KEY);
+    contextCooldownEl.value = savedCooldown || (Number.isFinite(Number(state.context_cooldown)) ? String(Math.round(Number(state.context_cooldown))) : "60");
+  }
+  if (contextProfileEl) contextProfileEl.value = window.localStorage.getItem(CONTEXT_PROFILE_KEY) || "auto";
+  if (notificationCooldownEl) {
+    notificationCooldownEl.value = window.localStorage.getItem(ALERT_NOTIFY_COOLDOWN_KEY) || notificationCooldownEl.value || "60";
+  }
+  syncLocalAlertSettings();
+  contextControlsHydrated = true;
+}
+
+function updateContextModelOptions(state) {
+  if (!contextModelEl) return;
+  const current = contextModelEl.value || "auto";
+  const stateModel = state && state.context_model ? String(state.context_model) : "";
+  const selected = contextControlsHydrated ? current : (window.localStorage.getItem(CONTEXT_MODEL_KEY) || "auto");
+  const models = Array.isArray(state?.context_models) ? state.context_models.map(String).filter(Boolean) : [];
+  const values = ["auto", ...models];
+  if (stateModel && !values.includes(stateModel)) values.push(stateModel);
+  if (selected && !values.includes(selected)) values.push(selected);
+  contextModelEl.innerHTML = "";
+  values.forEach(value => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === "auto" ? "Auto" : value;
+    contextModelEl.appendChild(option);
+  });
+  contextModelEl.value = values.includes(selected) ? selected : "auto";
+}
+
 function updateStateUi(state) {
+  lastWorkerState = state || null;
   statePresetEl.textContent = state && state.preset ? state.preset : "-";
   stateDetEl.textContent = state && state.det ? state.det : "-";
   statePoseEl.textContent = state && state.pose_enabled ? "on" : "off";
   stateFpsEl.textContent = state && Number.isFinite(state.fps) ? state.fps.toFixed(1) : "-";
   stateInferenceEl.textContent = state && state.inference_enabled ? "on" : "off";
+  setText(stateDetectMsEl, state?.perf && Number.isFinite(Number(state.perf.detect_ms)) ? Math.round(Number(state.perf.detect_ms)) + " ms" : "-");
+  setText(statePoseMsEl, state?.perf && Number.isFinite(Number(state.perf.pose_ms)) ? Math.round(Number(state.perf.pose_ms)) + " ms" : "-");
+  const context = state && state.context ? state.context : {};
+  setText(stateContextEnabledEl, state && state.context_enabled ? "on" : "off");
+  setText(stateContextTriggerEl, contextTriggerLabel(state && state.context_trigger));
+  setText(stateContextProfileEl, state && state.context_profile ? state.context_profile : "-");
+  setText(stateContextModelEl, state && state.context_model ? state.context_model : "-");
+  updateContextModelOptions(state);
+  if (contextSummaryEl) {
+    if (context.summary) {
+      const latency = Number.isFinite(Number(context.latency_ms)) ? " (" + Math.round(Number(context.latency_ms)) + " ms)" : "";
+      contextSummaryEl.textContent = context.summary + latency;
+      contextSummaryEl.className = "small";
+    } else if (context.error) {
+      contextSummaryEl.textContent = "Analysis error: " + context.error;
+      contextSummaryEl.className = "small error";
+    } else {
+      contextSummaryEl.textContent = state && state.context_enabled ? "Waiting for trigger..." : "Camera analysis is off.";
+      contextSummaryEl.className = "small";
+    }
+  }
+  hydrateContextControls(state);
+  maybeNotifyCameraAlert(context);
 }
 
 async function fetchState() {
@@ -1051,6 +1274,114 @@ async function sendCmd(cmd, busyText = "") {
   }
 }
 
+async function sendWorkerCommandPayload(payload) {
+  try {
+    if (!currentTarget) { currentTarget = resolveTargetBase(); setConnectionMode(currentTarget); }
+  } catch (error) {
+    setStatus(formatError(error), true);
+    return null;
+  }
+  const seq = ++cmdSeq;
+  const body = Object.assign({}, payload, { seq });
+  const response = await workerFetch("/api/cmd", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
+    body: JSON.stringify(body)
+  }, { expect: "json" });
+  await fetchState().catch(() => {});
+  return response;
+}
+
+async function saveContextSettings() {
+  const trigger = contextTriggerEl ? contextTriggerEl.value : "interval";
+  const cooldown = Math.max(1, parseInt(contextCooldownEl?.value || "30", 10) || 30);
+  const profile = contextProfileEl ? contextProfileEl.value : "auto";
+  const model = (contextModelEl?.value || "auto").trim() || "auto";
+  window.localStorage.setItem(CONTEXT_TRIGGER_KEY, trigger);
+  window.localStorage.setItem(CONTEXT_COOLDOWN_KEY, String(cooldown));
+  window.localStorage.setItem(CONTEXT_PROFILE_KEY, profile);
+  window.localStorage.setItem(CONTEXT_MODEL_KEY, model);
+  if (notificationCooldownEl) {
+    window.localStorage.setItem(ALERT_NOTIFY_COOLDOWN_KEY, String(getNotificationCooldownSeconds()));
+  }
+  if (preEventEnabledEl) window.localStorage.setItem(PRE_EVENT_ENABLED_KEY, preEventEnabledEl.value === "1" ? "1" : "0");
+  if (preEventSecondsEl) window.localStorage.setItem(PRE_EVENT_SECONDS_KEY, String(preEventSeconds()));
+  if (captureDescriptionsEl) window.localStorage.setItem(CAPTURE_DESCRIPTIONS_KEY, captureDescriptionsEl.value === "1" ? "1" : "0");
+  syncPreEventRecorder();
+  try {
+    await sendWorkerCommandPayload({
+      cmd: "context_config",
+      enabled: true,
+      trigger,
+      cooldown,
+      profile,
+      model
+    });
+    setStatus("Context settings applied.");
+  } catch (error) {
+    setStatus("Context settings failed: " + formatError(error), true);
+  }
+}
+
+async function analyzeContextNow() {
+  try {
+    await sendWorkerCommandPayload({ cmd: "context_analyze" });
+    setStatus("One-shot context analysis requested.");
+  } catch (error) {
+    setStatus("Context analysis failed: " + formatError(error), true);
+  }
+}
+
+async function stopContextAi() {
+  try {
+    await sendWorkerCommandPayload({ cmd: "context_emergency_stop" });
+    setStatus("Camera analysis stopped.");
+  } catch (error) {
+    setStatus("Camera analysis stop failed: " + formatError(error), true);
+  }
+}
+
+async function toggleFullscreen() {
+  const target = document.getElementById("stream-container") || videoEl || fallbackEl;
+  if (!target || !document.fullscreenEnabled) {
+    setStatus("Fullscreen is not available in this browser.", true);
+    return;
+  }
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      setStatus("Exited fullscreen.");
+    } else {
+      await target.requestFullscreen();
+      setStatus("Fullscreen enabled.");
+    }
+  } catch (error) {
+    setStatus("Fullscreen failed: " + formatError(error), true);
+  }
+}
+
+async function describeCaptureIfEnabled() {
+  if (!captureDescriptionsEnabled()) return "";
+  const before = Number(lastWorkerState?.context?.updated_at || 0);
+  try {
+    setStatus("Describing capture...");
+    await sendWorkerCommandPayload({ cmd: "context_analyze" });
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => window.setTimeout(resolve, 600));
+      const state = await fetchState().catch(() => null);
+      const context = state?.context || {};
+      const updatedAt = Number(context.updated_at || 0);
+      if (context.summary && (!before || updatedAt > before)) {
+        return String(context.summary).slice(0, 600);
+      }
+    }
+  } catch (_) {
+    // Capture upload should still succeed if description generation fails.
+  }
+  return String(lastWorkerState?.context?.summary || "").slice(0, 600);
+}
+
 // ===== Capture Frame =====
 async function captureFrame() {
   const mediaEl = videoEl.classList.contains("show") ? videoEl : fallbackEl;
@@ -1090,6 +1421,8 @@ async function captureFrame() {
   if (rawBlob && rawBlob.size > 0) fd.append("raw_file", rawBlob, "capture_raw.jpg");
   captureBtn.disabled = true;
   try {
+    const description = await describeCaptureIfEnabled();
+    if (description) fd.append("description", description);
     const resp = await fetch("/api/recordings/upload", { method: "POST", headers: { "X-CSRF-Token": csrf }, body: fd });
     if (resp.ok) {
       const data = await resp.json();
@@ -1124,6 +1457,71 @@ function preferredRecordingMimeType() {
 
 function recordingExtensionForMime(mimeType) {
   return String(mimeType || "").toLowerCase().includes("mp4") ? "mp4" : "webm";
+}
+
+function startPreEventRecorder() {
+  if (!preEventEnabled() || typeof MediaRecorder === "undefined") return;
+  if (preEventRecorder && preEventRecorder.state !== "inactive") return;
+  if (!videoEl.classList.contains("show") || !videoEl.srcObject) return;
+  const mimeType = preferredRecordingMimeType();
+  try {
+    preEventRecorder = new MediaRecorder(videoEl.srcObject, { mimeType });
+  } catch (_) {
+    preEventRecorder = null;
+    return;
+  }
+  preEventMimeType = mimeType;
+  preEventChunks = [];
+  preEventRecorder.ondataavailable = event => {
+    if (!event.data || event.data.size <= 0) return;
+    preEventChunks.push({ blob: event.data, ts: Date.now() });
+    const cutoff = Date.now() - (preEventSeconds() * 1000);
+    preEventChunks = preEventChunks.filter(chunk => chunk.ts >= cutoff);
+  };
+  preEventRecorder.onstop = () => {
+    preEventRecorder = null;
+  };
+  try {
+    preEventRecorder.start(1000);
+  } catch (_) {
+    preEventRecorder = null;
+    preEventChunks = [];
+  }
+}
+
+function stopPreEventRecorder() {
+  if (preEventRecorder && preEventRecorder.state !== "inactive") {
+    try { preEventRecorder.stop(); } catch (_) {}
+  }
+  preEventRecorder = null;
+  preEventChunks = [];
+}
+
+function syncPreEventRecorder() {
+  if (preEventEnabled()) startPreEventRecorder();
+  else stopPreEventRecorder();
+}
+
+async function triggerPreEventUpload(context) {
+  if (!preEventEnabled() || !preEventChunks.length) return;
+  const now = Date.now() / 1000;
+  if (now - lastPreEventUploadAt < Math.max(30, getNotificationCooldownSeconds())) return;
+  lastPreEventUploadAt = now;
+  const chunks = preEventChunks.map(chunk => chunk.blob);
+  const mimeType = preEventMimeType || preferredRecordingMimeType();
+  const extension = recordingExtensionForMime(mimeType);
+  const blob = new Blob(chunks, { type: mimeType });
+  if (!blob.size) return;
+  const fd = new FormData();
+  fd.append("type", "video");
+  fd.append("overlay_file", blob, `pre_event.${extension}`);
+  fd.append("duration", String(Math.min(preEventSeconds(), chunks.length)));
+  fd.append("description", buildCameraAlert(context).body);
+  const resp = await fetch("/api/recordings/upload", { method: "POST", headers: { "X-CSRF-Token": getCsrf() }, body: fd });
+  if (resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    setStatus("Pre-event clip saved" + (data.id ? " (#" + data.id + ")" : "") + ".");
+  }
 }
 
 function stopMediaRecorderInstance(recorder) {
@@ -1391,6 +1789,7 @@ async function uploadRecording() {
 videoEl.addEventListener("loadedmetadata", () => {
   if (intentionalDisconnect || pausedForHidden) return;
   showVideo(); setPlaceholder("", false);
+  syncPreEventRecorder();
   if (videoEl.srcObject) {
     setWorkerHealth("online", "Receiving WebRTC video");
     setStreamMode("webrtc", "Live video is streaming over WebRTC.");
@@ -1431,9 +1830,45 @@ window.addEventListener("beforeunload", () => {
   closePeer(); cancelMjpeg();
 });
 
+function isTypingTarget(target) {
+  if (!target) return false;
+  const tag = String(target.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+}
+
+document.addEventListener("keydown", event => {
+  if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || isTypingTarget(event.target)) return;
+  const key = String(event.key || "").toLowerCase();
+  if (key === "c") {
+    event.preventDefault();
+    analyzeContextNow();
+  } else if (key === "i") {
+    event.preventDefault();
+    sendCmd("i");
+  } else if (key === "p") {
+    event.preventDefault();
+    sendCmd("p");
+  } else if (key === "o") {
+    event.preventDefault();
+    sendCmd("o");
+  } else if (key === "m") {
+    event.preventDefault();
+    sendCmd("m", "Switching to next model...");
+  } else if (key === "n") {
+    event.preventDefault();
+    sendCmd("n", "Switching to previous model...");
+  } else if (key === "q") {
+    event.preventDefault();
+    sendCmd("q", "Stopping worker...");
+  }
+});
+
 if (baseInputEl) {
   baseInputEl.addEventListener("input", () => {
-    if (!baseInputEl.readOnly) rememberedDirectBase = baseInputEl.value.trim() || rememberedDirectBase;
+    if (!baseInputEl.readOnly) {
+      rememberedDirectBase = baseInputEl.value.trim() || rememberedDirectBase;
+      window.localStorage.setItem(STREAM_DIRECT_BASE_KEY, rememberedDirectBase);
+    }
     updateTargetPreview();
   });
   baseInputEl.addEventListener("keydown", event => {
@@ -1443,24 +1878,81 @@ if (baseInputEl) {
 
 if (connectionModeEl) {
   connectionModeEl.addEventListener("change", () => {
+    window.localStorage.setItem(STREAM_CONNECTION_MODE_KEY, connectionModeEl.value);
     updateBaseInputUi();
     updateTargetPreview();
   });
 }
 
 // ===== Init =====
+migrateAlertNotificationSettings();
+rememberedDirectBase = window.localStorage.getItem(STREAM_DIRECT_BASE_KEY) || DEFAULT_DIRECT_BASE;
 if (connectionModeEl) {
-  connectionModeEl.value = IS_FILE_PROTOCOL ? "direct" : "proxy";
+  const savedMode = window.localStorage.getItem(STREAM_CONNECTION_MODE_KEY);
+  connectionModeEl.value = IS_FILE_PROTOCOL ? "direct" : (savedMode === "direct" ? "direct" : "proxy");
 }
+if (notificationCooldownEl) {
+  notificationCooldownEl.value = window.localStorage.getItem(ALERT_NOTIFY_COOLDOWN_KEY) || notificationCooldownEl.value || "60";
+  notificationCooldownEl.addEventListener("change", () => {
+    window.localStorage.setItem(ALERT_NOTIFY_COOLDOWN_KEY, String(getNotificationCooldownSeconds()));
+  });
+}
+syncLocalAlertSettings();
+if (preEventEnabledEl) {
+  preEventEnabledEl.addEventListener("change", () => {
+    window.localStorage.setItem(PRE_EVENT_ENABLED_KEY, preEventEnabledEl.value === "1" ? "1" : "0");
+    syncPreEventRecorder();
+  });
+}
+if (preEventSecondsEl) {
+  preEventSecondsEl.addEventListener("change", () => {
+    window.localStorage.setItem(PRE_EVENT_SECONDS_KEY, String(preEventSeconds()));
+  });
+}
+if (captureDescriptionsEl) {
+  captureDescriptionsEl.addEventListener("change", () => {
+    window.localStorage.setItem(CAPTURE_DESCRIPTIONS_KEY, captureDescriptionsEl.value === "1" ? "1" : "0");
+  });
+}
+if (contextTriggerEl) {
+  contextTriggerEl.addEventListener("change", () => {
+    window.localStorage.setItem(CONTEXT_TRIGGER_KEY, contextTriggerEl.value || "person_appears");
+  });
+}
+if (contextCooldownEl) {
+  contextCooldownEl.addEventListener("change", () => {
+    const value = Math.max(1, parseInt(contextCooldownEl.value || "60", 10) || 60);
+    contextCooldownEl.value = String(value);
+    window.localStorage.setItem(CONTEXT_COOLDOWN_KEY, String(value));
+  });
+}
+if (contextProfileEl) {
+  contextProfileEl.addEventListener("change", () => {
+    window.localStorage.setItem(CONTEXT_PROFILE_KEY, contextProfileEl.value || "auto");
+  });
+}
+if (contextModelEl) {
+  contextModelEl.addEventListener("change", () => {
+    window.localStorage.setItem(CONTEXT_MODEL_KEY, (contextModelEl.value || "auto").trim() || "auto");
+  });
+}
+refreshNotificationButton();
 if (baseInputEl) {
   if (IS_FILE_PROTOCOL && (!baseInputEl.value.trim() || baseInputEl.value.trim() === "/")) {
-    baseInputEl.value = DEFAULT_DIRECT_BASE;
+    baseInputEl.value = rememberedDirectBase || DEFAULT_DIRECT_BASE;
+  } else if (!IS_FILE_PROTOCOL && connectionModeEl?.value === "direct" && (!baseInputEl.value.trim() || baseInputEl.value.trim() === "/")) {
+    baseInputEl.value = rememberedDirectBase || DEFAULT_DIRECT_BASE;
   } else if (!IS_FILE_PROTOCOL && !baseInputEl.value.trim()) {
     baseInputEl.value = "/";
   }
 }
 updateBaseInputUi();
-setConnectionMode(IS_FILE_PROTOCOL ? { kind: "direct", display: getBaseInputValue() || DEFAULT_DIRECT_BASE } : { kind: "proxy", display: PAGE_ORIGIN || "/" });
+const initialConnectionKind = connectionModeEl?.value === "direct" ? "direct" : "proxy";
+setConnectionMode(
+  initialConnectionKind === "direct"
+    ? { kind: "direct", display: getBaseInputValue() || rememberedDirectBase || DEFAULT_DIRECT_BASE }
+    : { kind: "proxy", display: PAGE_ORIGIN || "/" }
+);
 updateTargetPreview();
 setStreamMode("idle", "WebRTC first, MJPEG fallback if needed.");
 setWorkerHealth("connecting", "Connecting to worker");
@@ -1479,8 +1971,13 @@ document.addEventListener("click", event => {
   const action = btn.dataset.action;
   if (action === "capture") captureFrame();
   else if (action === "record") toggleRecord();
+  else if (action === "fullscreen") toggleFullscreen();
   else if (action === "cmd") sendCmd(btn.dataset.cmd, btn.dataset.busy || undefined);
   else if (action === "connect") connect().catch(error => setStatus(formatError(error), true));
+  else if (action === "context-save") saveContextSettings();
+  else if (action === "context-analyze") analyzeContextNow();
+  else if (action === "context-stop") stopContextAi();
+  else if (action === "notification-toggle") toggleNotifications();
   else if (action === "delete-passkey") deletePasskey(parseInt(btn.dataset.credId), btn.dataset.name);
 });
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -132,6 +132,9 @@ async def stream_page(request: Request):
 
 @app.get("/favicon.ico")
 async def favicon():
+    icon_path = static_path / "branding" / "favicon.png"
+    if icon_path.exists():
+        return FileResponse(str(icon_path), media_type="image/png")
     return HTMLResponse("", status_code=204)
 
 

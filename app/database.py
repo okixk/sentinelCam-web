@@ -100,6 +100,8 @@ async def init_db() -> None:
         columns = [row[1] for row in await cursor.fetchall()]
         if "shared" not in columns:
             await conn.execute("ALTER TABLE recordings ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+        if "metadata" not in columns:
+            await conn.execute("ALTER TABLE recordings ADD COLUMN metadata TEXT")
         await conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
         await conn.commit()
         log.info("Database schema initialized at %s", db_path)

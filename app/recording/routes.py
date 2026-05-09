@@ -87,6 +87,7 @@ async def upload_recording(
     overlay_file: UploadFile = File(...),
     raw_file: Optional[UploadFile] = File(None),
     duration: Optional[float] = Form(None),
+    description: Optional[str] = Form(None),
     user: User = Depends(get_current_user),
     _csrf=Depends(check_csrf),
 ):
@@ -133,6 +134,9 @@ async def upload_recording(
     quota_bytes = settings.storage_quota_per_user_mb * 1024 * 1024
     add_bytes = overlay_size + raw_size
 
+    clean_description = (description or "").strip()[:1000]
+    metadata = json.dumps({"description": clean_description}) if clean_description else None
+
     async with get_db() as conn:
         # Quota check inside the same transaction to prevent race conditions
         cursor = await conn.execute(
@@ -150,8 +154,8 @@ async def upload_recording(
             raise HTTPException(413, f"Storage quota exceeded ({settings.storage_quota_per_user_mb} MB limit)")
 
         cursor = await conn.execute(
-            "INSERT INTO recordings (user_id, type, filename, overlay_filename, raw_filename, size_bytes, duration_seconds) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            "INSERT INTO recordings (user_id, type, filename, overlay_filename, raw_filename, size_bytes, duration_seconds, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (
                 user.id,
                 type,
@@ -160,6 +164,7 @@ async def upload_recording(
                 raw_filename,
                 add_bytes,
                 duration if type == "video" else None,
+                metadata,
             ),
         )
         new_row = await cursor.fetchone()
@@ -206,10 +211,11 @@ async def list_recordings(
             "CAST(r.id AS TEXT) LIKE ? OR "
             "LOWER(r.type) LIKE ? OR "
             "LOWER(COALESCE(u.username, '')) LIKE ? OR "
-            "LOWER(COALESCE(r.filename, '')) LIKE ?"
+            "LOWER(COALESCE(r.filename, '')) LIKE ? OR "
+            "LOWER(COALESCE(r.metadata, '')) LIKE ?"
             ")"
         )
-        params.extend([like, like, like, like])
+        params.extend([like, like, like, like, like])
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params_count = list(params)
@@ -225,7 +231,7 @@ async def list_recordings(
 
         cursor = await conn.execute(
             f"SELECT r.id, r.type, r.filename, r.overlay_filename, r.raw_filename, "
-            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, u.username "
+            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, r.metadata, u.username "
             f"FROM recordings r JOIN users u ON r.user_id = u.id {where} "
             f"ORDER BY r.created_at {order}, r.id {order} LIMIT ? OFFSET ?",
             params,

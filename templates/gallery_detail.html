@@ -131,6 +131,12 @@
           <dt>Owner</dt>
           <dd>{{ rec.username }}</dd>
         </div>
+        {% if rec.description %}
+        <div class="diag-span">
+          <dt>Description</dt>
+          <dd>{{ rec.description }}</dd>
+        </div>
+        {% endif %}
         <div>
           <dt>Overlay variant</dt>
           <dd>{{ 'Available' if rec.overlay_filename else 'Unavailable' }}</dd>

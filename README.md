@@ -57,13 +57,13 @@ Linux:
 
 - Docker Engine with Compose
 - Bash
-- Python 3 with `venv`
+- Python 3.12, 3.13, or 3.14 with `venv`
 
 macOS:
 
 - Docker Desktop
 - Bash or zsh
-- Python 3 with `venv`
+- Python 3.12, 3.13, or 3.14 with `venv`
 
 ### Create `.env`
 
@@ -259,6 +259,8 @@ http://localhost:3000
 
 This is optional. The Docker path above is the recommended one.
 
+The dependency set is maintained for Python 3.12, 3.13, and 3.14. Docker builds default to Python 3.14; set `PYTHON_VERSION=3.13` or `PYTHON_VERSION=3.12` before `docker compose build` to build an older supported runtime.
+
 When the web app runs directly on the host instead of Docker:
 
 - the default `WORKER_BASE_URL=http://127.0.0.1:8080` usually works
@@ -346,6 +348,8 @@ If the worker is running locally, stop it in its own terminal with `Ctrl+C`.
 | `WEBAUTHN_RP_ID` | `localhost` | Passkey relying-party ID for local development |
 | `WORKER_SOURCE` | unset | Worker source for helper scripts and Linux Docker worker |
 | `WORKER_BIND_HOST` | `0.0.0.0` | Bind host for helper-started Linux worker and Linux Docker worker |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Native host Ollama endpoint used by the worker for context detection |
+| `DEFAULT_CONTEXT_PROFILE` | `auto` | Worker context model profile: `low`, `mid`, `high`, `max`, or `auto` |
 | `WORKER_VIDEO_DEVICE` | `/dev/video0` | Linux webcam device for Docker passthrough |
 | `WORKER_STREAM_MODE` | `auto` | Linux Docker worker stream mode |
 | `WORKER_PERFORMANCE_PROFILE` | `auto` | Linux Docker worker performance tuning |

@@ -1,4 +1,5 @@
-FROM python:3.13-slim
+ARG PYTHON_VERSION=3.14
+FROM python:${PYTHON_VERSION}-slim
 WORKDIR /app
 
 RUN apt-get update && \

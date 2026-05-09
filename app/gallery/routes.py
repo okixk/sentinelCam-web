@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from math import floor
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -70,11 +71,12 @@ def _gallery_where_clause(user: User, media_type: str | None, q: str, preset: st
             "CAST(r.id AS TEXT) LIKE ? OR "
             "LOWER(r.type) LIKE ? OR "
             "LOWER(COALESCE(u.username, '')) LIKE ? OR "
-            "LOWER(COALESCE(r.filename, '')) LIKE ?"
+            "LOWER(COALESCE(r.filename, '')) LIKE ? OR "
+            "LOWER(COALESCE(r.metadata, '')) LIKE ?"
             ")"
         )
         like = f"%{q.lower()}%"
-        params.extend([like, like, like, like])
+        params.extend([like, like, like, like, like])
 
     return _compose_where(conditions), params
 
@@ -126,7 +128,7 @@ async def gallery_data(
 
         cursor = await conn.execute(
             f"SELECT r.id, r.type, r.filename, r.overlay_filename, r.raw_filename, "
-            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, u.username "
+            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, r.metadata, u.username "
             f"FROM recordings r JOIN users u ON r.user_id = u.id {where} "
             f"ORDER BY r.created_at {order}, r.id {order} LIMIT ? OFFSET ?",
             [*query_params, params["per_page"], offset],
@@ -227,13 +229,20 @@ async def gallery_detail_page(
         item["share_label"] = "Shared" if item["shared"] else "Private"
         same_hour_items.append(item)
 
+    recording = dict(row)
+    try:
+        metadata = json.loads(recording.get("metadata") or "{}")
+    except Exception:
+        metadata = {}
+    recording["description"] = str(metadata.get("description") or "").strip()
+
     return templates.TemplateResponse(
         request,
         "gallery_detail.html",
         {
             "request": request,
             "user": user,
-            "recording": dict(row),
+            "recording": recording,
             "prev_id": prev_id,
             "next_id": next_id,
             "back_query": back_query,

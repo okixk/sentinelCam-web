@@ -31,12 +31,14 @@
         <div id="streamPlaceholder" class="stream-placeholder">Connecting...</div>
         <video id="stream" class="stream-media" autoplay playsinline muted aria-label="Live camera feed"></video>
         <img id="streamFallback" class="stream-media" alt="sentinelCam MJPEG fallback" />
+        <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
       </div>
 
       <div class="stream-toolbar">
         <div class="stream-actions">
           <button id="capture-btn" data-action="capture">Capture</button>
           <button id="record-btn" data-action="record">Record</button>
+          <button id="fullscreen-btn" data-action="fullscreen" class="secondary">Fullscreen</button>
           <span id="record-timer" class="record-timer"></span>
         </div>
       </div>
@@ -54,17 +56,48 @@
           </div>
         </div>
         <div id="state" class="state-chips">
-          <div class="chip">Connection: <strong id="stateConnection">Proxy</strong></div>
           <div class="chip">Stream: <strong id="stateStreamMode" data-mode="idle">Idle</strong></div>
-          <div class="chip">Preset: <strong id="statePreset">-</strong></div>
           <div class="chip">Detection: <strong id="stateDet">-</strong></div>
-          <div class="chip">Pose: <strong id="statePose">-</strong></div>
-          <div class="chip">Codec: <strong id="stateCodec">-</strong></div>
-          <div class="chip">Bitrate: <strong id="stateBitrate">-</strong></div>
           <div class="chip">FPS: <strong id="stateFps">-</strong></div>
-          <div class="chip">Inference: <strong id="stateInference">-</strong></div>
         </div>
         <div id="streamModeNote" class="small">WebRTC first, MJPEG fallback if needed.</div>
+        <details class="connection-details compact-details">
+          <summary>Worker details</summary>
+          <dl class="diag-grid">
+            <div>
+              <dt>Connection</dt>
+              <dd id="stateConnection">Proxy</dd>
+            </div>
+            <div>
+              <dt>Preset</dt>
+              <dd id="statePreset">-</dd>
+            </div>
+            <div>
+              <dt>Pose</dt>
+              <dd id="statePose">-</dd>
+            </div>
+            <div>
+              <dt>Inference</dt>
+              <dd id="stateInference">-</dd>
+            </div>
+            <div>
+              <dt>Codec</dt>
+              <dd id="stateCodec">-</dd>
+            </div>
+            <div>
+              <dt>Bitrate</dt>
+              <dd id="stateBitrate">-</dd>
+            </div>
+            <div>
+              <dt>Detect</dt>
+              <dd id="stateDetectMs">-</dd>
+            </div>
+            <div>
+              <dt>Pose</dt>
+              <dd id="statePoseMs">-</dd>
+            </div>
+          </dl>
+        </details>
         <div class="control-grid">
           {% if user.role == 'admin' %}
           <div class="row">
@@ -106,29 +139,29 @@
           </div>
         </div>
         <div id="connectionNote" class="small">Use proxy first. Switch to direct only if needed.</div>
-        <div id="troubleSummary" class="small">
-          Proxy handles auth and CORS. Direct can help with local routing issues.
-        </div>
-        <div class="trouble-grid">
-          <div id="trouble-step-route" class="trouble-step" data-state="pending">
-            <strong>1. Route</strong>
-            <div id="trouble-routeDetail" class="small">Choose proxy or direct mode first.</div>
-          </div>
-          <div id="trouble-step-state" class="trouble-step" data-state="pending">
-            <strong>2. State API</strong>
-            <div id="trouble-stateDetail" class="small">The page checks whether `/api/state` is reachable.</div>
-          </div>
-          <div id="trouble-step-webrtc" class="trouble-step" data-state="pending">
-            <strong>3. WebRTC</strong>
-            <div id="trouble-webrtcDetail" class="small">The player tries WebRTC first for the live feed.</div>
-          </div>
-          <div id="trouble-step-video" class="trouble-step" data-state="pending">
-            <strong>4. Video path</strong>
-            <div id="trouble-videoDetail" class="small">If WebRTC fails, the page falls back to MJPEG when possible.</div>
-          </div>
-        </div>
-        <details class="connection-details">
+        <details class="connection-details compact-details">
           <summary>Technical details</summary>
+          <div id="troubleSummary" class="small">
+            Proxy handles auth and CORS. Direct can help with local routing issues.
+          </div>
+          <div class="trouble-grid">
+            <div id="trouble-step-route" class="trouble-step" data-state="pending">
+              <strong>1. Route</strong>
+              <div id="trouble-routeDetail" class="small">Choose proxy or direct mode first.</div>
+            </div>
+            <div id="trouble-step-state" class="trouble-step" data-state="pending">
+              <strong>2. State API</strong>
+              <div id="trouble-stateDetail" class="small">The page checks whether `/api/state` is reachable.</div>
+            </div>
+            <div id="trouble-step-webrtc" class="trouble-step" data-state="pending">
+              <strong>3. WebRTC</strong>
+              <div id="trouble-webrtcDetail" class="small">The player tries WebRTC first for the live feed.</div>
+            </div>
+            <div id="trouble-step-video" class="trouble-step" data-state="pending">
+              <strong>4. Video path</strong>
+              <div id="trouble-videoDetail" class="small">If WebRTC fails, the page falls back to MJPEG when possible.</div>
+            </div>
+          </div>
           <dl class="diag-grid">
             <div>
               <dt>Page origin</dt>
@@ -162,6 +195,90 @@
         </details>
       </section>
 
+      {% if user.role == 'admin' %}
+      <section class="panel info-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Context</h2>
+          </div>
+        </div>
+        <div class="state-chips">
+          <div class="chip">Analysis: <strong id="stateContextEnabled">-</strong></div>
+          <div class="chip">Trigger: <strong id="stateContextTrigger">-</strong></div>
+          <div class="chip">Profile: <strong id="stateContextProfile">-</strong></div>
+        </div>
+        <div id="contextSummary" class="small">No context yet.</div>
+        <div class="row">
+          <button data-action="context-analyze" class="secondary">Analyze now</button>
+          <button data-action="context-stop" class="danger">Stop analysis</button>
+          <button data-action="notification-toggle" class="secondary" id="notificationToggle">Alerts off</button>
+        </div>
+        <details class="connection-details compact-details">
+          <summary>Alert and analysis settings</summary>
+          <div class="connection-form">
+            <div class="field compact-field">
+              <label for="context-trigger">Trigger</label>
+              <select id="context-trigger">
+                <option value="interval">Every interval</option>
+                <option value="person_appears">Person appears</option>
+                <option value="person_present">Person present</option>
+                <option value="manual">Manual only</option>
+              </select>
+            </div>
+            <div class="field compact-field">
+              <label for="context-profile">Context profile</label>
+              <select id="context-profile">
+                <option value="auto">Auto</option>
+                <option value="low">Low CPU</option>
+                <option value="mid">Mid GPU</option>
+                <option value="high">High GPU</option>
+                <option value="max">Max GPU</option>
+              </select>
+            </div>
+            <div class="field compact-field">
+              <label for="context-model">Ollama model</label>
+              <select id="context-model">
+                <option value="auto">Auto</option>
+              </select>
+            </div>
+            <div class="field compact-field">
+              <label for="context-cooldown">Trigger cooldown seconds</label>
+              <input id="context-cooldown" type="number" min="1" max="3600" step="1" value="30" />
+            </div>
+            <div class="field compact-field">
+              <label for="notification-cooldown">Alert cooldown seconds</label>
+              <input id="notification-cooldown" type="number" min="5" max="3600" step="1" value="60" />
+            </div>
+            <div class="field compact-field">
+              <label for="pre-event-enabled">Pre-event clip</label>
+              <select id="pre-event-enabled">
+                <option value="0">Off</option>
+                <option value="1">On</option>
+              </select>
+            </div>
+            <div class="field compact-field">
+              <label for="pre-event-seconds">Pre-event seconds</label>
+              <input id="pre-event-seconds" type="number" min="5" max="120" step="5" value="30" />
+            </div>
+            <div class="field compact-field">
+              <label for="capture-descriptions">Describe captures</label>
+              <select id="capture-descriptions">
+                <option value="0">Off</option>
+                <option value="1">On</option>
+              </select>
+            </div>
+          </div>
+          <dl class="diag-grid">
+            <div>
+              <dt>Model</dt>
+              <dd id="stateContextModel">-</dd>
+            </div>
+          </dl>
+          <button data-action="context-save" class="secondary">Apply settings</button>
+        </details>
+      </section>
+      {% endif %}
+
       <section class="panel">
         <div class="panel-header">
           <div>
@@ -174,5 +291,5 @@
     </aside>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/stream.js?v=20260323j"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/stream.js?v=20260509a"></script>
 {% endblock %}

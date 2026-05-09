@@ -27,6 +27,15 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function metadataDescription(item) {
+  try {
+    const data = item && item.metadata ? JSON.parse(item.metadata) : {};
+    return String(data.description || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
 function getStateFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
@@ -134,6 +143,14 @@ function renderCard(item, state) {
   ownerEl.className = "gallery-date";
   ownerEl.textContent = "Owner: " + (item.username || "-");
   info.appendChild(ownerEl);
+
+  const description = metadataDescription(item);
+  if (description) {
+    const descEl = document.createElement("div");
+    descEl.className = "gallery-date";
+    descEl.textContent = description.length > 110 ? description.slice(0, 107) + "..." : description;
+    info.appendChild(descEl);
+  }
 
   const variantEl = document.createElement("div");
   variantEl.className = "gallery-card-flags";

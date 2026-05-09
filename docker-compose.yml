@@ -8,7 +8,10 @@
 
 services:
   web:
-    build: .
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.14}
     ports:
       - "3000:3000"
     restart: unless-stopped
@@ -42,6 +45,11 @@ services:
       SC_WEIGHTS_DIR: /app/.runtime/weights
       SC_RUNS_DIR: /app/.runtime/runs
       SC_DATASETS_DIR: /app/.runtime/datasets
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://127.0.0.1:11434}
+      DEFAULT_CONTEXT_ENABLED: ${DEFAULT_CONTEXT_ENABLED:-0}
+      DEFAULT_CONTEXT_SETUP_OLLAMA: ${DEFAULT_CONTEXT_SETUP_OLLAMA:-0}
+      DEFAULT_CONTEXT_PROFILE: ${DEFAULT_CONTEXT_PROFILE:-auto}
+      DEFAULT_CONTEXT_MODEL: ${DEFAULT_CONTEXT_MODEL:-auto}
     volumes:
       - ../sentinelCam-worker/.runtime:/app/.runtime
     command:
