@@ -14,6 +14,7 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import User, check_csrf, get_current_user, _get_session_user
 from app.config import settings
 from app.database import get_db
+from app.runtime_settings import get_security_config
 from app.security import (
     dummy_verify,
     generate_csrf_token,
@@ -152,6 +153,7 @@ class LoginRequest(BaseModel):
 @router.post("/login")
 async def login(request: Request, body: LoginRequest):
     ip = request.client.host if request.client else "unknown"
+    security_config = get_security_config()
 
     if not login_rate_limiter.is_allowed(ip):
         _audit("auth.login.ratelimit", ip=ip)
@@ -189,8 +191,8 @@ async def login(request: Request, body: LoginRequest):
     if not verify_password(body.password, user_row["password_hash"]):
         attempts = user_row["failed_login_attempts"] + 1
         new_locked_until = None
-        if attempts >= settings.lockout_threshold:
-            new_locked_until = now + settings.lockout_duration_minutes * 60
+        if attempts >= security_config.lockout_threshold:
+            new_locked_until = now + security_config.lockout_duration_minutes * 60
             _audit("auth.lockout", username=body.username, ip=ip)
 
         async with get_db() as conn:

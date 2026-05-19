@@ -129,6 +129,8 @@ Dockerfile
 |---|---|
 | `ADMIN_USER` / `ADMIN_PASSWORD` | First-boot admin credentials |
 | `WEBAUTHN_RP_ID` | Passkey relying-party ID; must match the hostname |
+| `LOGIN_RATE_LIMIT` / `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | First-start IP login limit defaults |
+| `LOCKOUT_THRESHOLD` / `LOCKOUT_DURATION_MINUTES` | First-start user lockout defaults |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
 | `LOCAL_STORAGE_PATH` | Recording storage path inside the web container |
 | `SC_PUBLIC_HOSTNAME` | DNS name Caddy serves (default `sentinelcam.local`) |

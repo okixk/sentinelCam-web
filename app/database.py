@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS recordings (
     metadata TEXT
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL DEFAULT EXTRACT(EPOCH FROM clock_timestamp())
+);
+
 ALTER TABLE recordings ADD COLUMN IF NOT EXISTS shared INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE recordings ADD COLUMN IF NOT EXISTS metadata TEXT;
 

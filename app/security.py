@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import secrets
 import time
 from typing import Optional
@@ -61,6 +62,11 @@ class LoginRateLimiter:
         self._store: dict[str, list[float]] = {}
         self._last_sweep = 0.0
 
+    def configure(self, max_attempts: int, window_seconds: int) -> None:
+        self._max = max(1, int(max_attempts))
+        self._window = max(1, int(window_seconds))
+        self._sweep(time.time())
+
     def _prune_attempts(self, ip: str, now: float) -> list[float]:
         attempts = [t for t in self._store.get(ip, []) if now - t < self._window]
         if attempts:
@@ -99,6 +105,32 @@ class LoginRateLimiter:
         self._sweep(now)
         attempts = self._prune_attempts(ip, now)
         return max(0, self._max - len(attempts))
+
+    def blocked_ips(self) -> list[dict[str, object]]:
+        now = time.time()
+        self._sweep(now)
+        blocked: list[dict[str, object]] = []
+        for ip in list(self._store.keys()):
+            attempts = self._prune_attempts(ip, now)
+            if len(attempts) < self._max:
+                continue
+            blocked_until = min(attempts) + self._window
+            remaining_seconds = max(0, math.ceil(blocked_until - now))
+            blocked.append(
+                {
+                    "ip": ip,
+                    "attempts": len(attempts),
+                    "limit": self._max,
+                    "window_seconds": self._window,
+                    "blocked_until": blocked_until,
+                    "remaining_seconds": remaining_seconds,
+                }
+            )
+        blocked.sort(key=lambda item: (item["remaining_seconds"], item["ip"]), reverse=True)
+        return blocked
+
+    def unblock(self, ip: str) -> bool:
+        return self._store.pop(ip, None) is not None
 
 
 login_rate_limiter = LoginRateLimiter(

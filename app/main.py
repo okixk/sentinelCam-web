@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.database import close_pool, init_db
+from app.runtime_settings import load_and_apply_security_config
 from app.storage import ensure_storage
 from app.thumbnail_jobs import shutdown_thumbnail_jobs
 
@@ -18,6 +19,7 @@ from app.thumbnail_jobs import shutdown_thumbnail_jobs
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await load_and_apply_security_config()
     await ensure_storage()
     try:
         yield

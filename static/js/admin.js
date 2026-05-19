@@ -9,6 +9,23 @@ function formatDate(ts) {
   return new Date(parseFloat(ts) * 1000).toLocaleString();
 }
 
+function formatDuration(totalSeconds) {
+  let seconds = Math.max(0, Math.ceil(parseFloat(totalSeconds) || 0));
+  if (seconds <= 0) return "now";
+  const days = Math.floor(seconds / 86400);
+  seconds -= days * 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds -= hours * 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds -= minutes * 60;
+  const parts = [];
+  if (days) parts.push(days + "d");
+  if (hours) parts.push(hours + "h");
+  if (minutes) parts.push(minutes + "m");
+  if (!parts.length || seconds) parts.push(seconds + "s");
+  return parts.slice(0, 2).join(" ");
+}
+
 function escHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -38,6 +55,11 @@ const OPS_POLL_MAX_MS = 30000;
 let opsStatusTimer = null;
 let opsStatusFailureCount = 0;
 let opsStatusInFlight = false;
+const SECURITY_POLL_BASE_MS = 10000;
+const SECURITY_POLL_MAX_MS = 30000;
+let securityStatusTimer = null;
+let securityStatusFailureCount = 0;
+let securityStatusInFlight = false;
 
 function setPasswordResetFeedback(message, tone = "neutral") {
   if (!passwordResetFeedback) return;
@@ -156,6 +178,130 @@ async function loadOpsStatus(options = {}) {
     scheduleOpsStatusPoll(nextOpsPollDelay());
   } finally {
     opsStatusInFlight = false;
+  }
+}
+
+function nextSecurityPollDelay() {
+  if (securityStatusFailureCount <= 0) return SECURITY_POLL_BASE_MS;
+  const scaled = SECURITY_POLL_BASE_MS * Math.pow(2, securityStatusFailureCount - 1);
+  return Math.min(scaled, SECURITY_POLL_MAX_MS);
+}
+
+function scheduleSecurityStatusPoll(delayMs = null) {
+  window.clearTimeout(securityStatusTimer);
+  securityStatusTimer = window.setTimeout(() => {
+    loadSecurityStatus({ silent: true }).catch(() => {});
+  }, delayMs == null ? nextSecurityPollDelay() : delayMs);
+}
+
+function securityFormHasFocus() {
+  const form = document.getElementById("security-settings-form");
+  return !!form && form.contains(document.activeElement);
+}
+
+function setSecurityFormValues(settings, force = false) {
+  if (!force && securityFormHasFocus()) return;
+  const rateLimit = document.getElementById("security-login-rate-limit");
+  const rateWindow = document.getElementById("security-login-rate-window");
+  const lockoutThreshold = document.getElementById("security-lockout-threshold");
+  const lockoutDuration = document.getElementById("security-lockout-duration");
+  if (rateLimit) rateLimit.value = settings.login_rate_limit || 5;
+  if (rateWindow) rateWindow.value = settings.login_rate_limit_window_minutes || 15;
+  if (lockoutThreshold) lockoutThreshold.value = settings.lockout_threshold || 10;
+  if (lockoutDuration) lockoutDuration.value = settings.lockout_duration_minutes || 30;
+}
+
+function renderBlockedIps(blockedIps) {
+  const el = document.getElementById("blocked-ips-table");
+  if (!el) return;
+  if (!blockedIps.length) {
+    el.innerHTML = '<p class="small">No blocked IPs.</p>';
+    return;
+  }
+
+  let html = '<div class="table-wrap"><table class="admin-table"><thead><tr><th>IP</th><th>Attempts</th><th>Remaining</th><th>Until</th><th>Action</th></tr></thead><tbody>';
+  for (const item of blockedIps) {
+    const ip = item.ip || "-";
+    html += `<tr>
+      <td><code>${escHtml(ip)}</code></td>
+      <td>${item.attempts || 0}/${item.limit || "-"}</td>
+      <td>${formatDuration(item.remaining_seconds || 0)}</td>
+      <td>${item.blocked_until ? formatDate(item.blocked_until) : "-"}</td>
+      <td><button type="button" class="secondary admin-inline-button" data-action="unblock-ip" data-ip="${escHtml(ip)}">Unblock</button></td>
+    </tr>`;
+  }
+  html += "</tbody></table></div>";
+  el.innerHTML = html;
+}
+
+async function loadSecurityStatus(options = {}) {
+  if (securityStatusInFlight && !options.force) return;
+  securityStatusInFlight = true;
+  const tableEl = document.getElementById("blocked-ips-table");
+  if (!tableEl) {
+    securityStatusInFlight = false;
+    return;
+  }
+  try {
+    const resp = await fetch("/api/admin/security", { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    securityStatusFailureCount = 0;
+    setSecurityFormValues(data.settings || {}, !!options.force);
+    renderBlockedIps(data.blocked_ips || []);
+    scheduleSecurityStatusPoll(SECURITY_POLL_BASE_MS);
+  } catch (err) {
+    securityStatusFailureCount += 1;
+    if (!options.silent) {
+      tableEl.innerHTML = '<span class="small error">Failed to load security status: ' + err.message + "</span>";
+    }
+    scheduleSecurityStatusPoll(nextSecurityPollDelay());
+  } finally {
+    securityStatusInFlight = false;
+  }
+}
+
+async function saveSecuritySettings(event) {
+  event.preventDefault();
+  const body = {
+    login_rate_limit: parseInt(document.getElementById("security-login-rate-limit")?.value || "0", 10),
+    login_rate_limit_window_minutes: parseInt(document.getElementById("security-login-rate-window")?.value || "0", 10),
+    lockout_threshold: parseInt(document.getElementById("security-lockout-threshold")?.value || "0", 10),
+    lockout_duration_minutes: parseInt(document.getElementById("security-lockout-duration")?.value || "0", 10),
+  };
+
+  try {
+    const resp = await fetch("/api/admin/security/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "HTTP " + resp.status);
+    }
+    toast("Login security settings saved.", { tone: "success", title: "Security updated" });
+    await loadSecurityStatus({ force: true });
+  } catch (err) {
+    toast("Save failed: " + err.message, { tone: "error", title: "Security update failed" });
+  }
+}
+
+async function unblockIp(ip) {
+  try {
+    const resp = await fetch("/api/admin/security/blocked-ips/unblock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
+      body: JSON.stringify({ ip }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || "HTTP " + resp.status);
+    }
+    toast("IP unblocked: " + ip, { tone: "success", title: "IP released" });
+    await loadSecurityStatus({ force: true });
+  } catch (err) {
+    toast("Unblock failed: " + err.message, { tone: "error", title: "IP release failed" });
   }
 }
 
@@ -407,6 +553,7 @@ loadUsers();
 loadSessions();
 loadSystemInfo();
 loadOpsStatus({ force: true }).catch(() => {});
+loadSecurityStatus({ force: true }).catch(() => {});
 
 document.addEventListener("click", event => {
   const btn = event.target.closest("[data-action]");
@@ -417,9 +564,11 @@ document.addEventListener("click", event => {
   else if (action === "cancel-password-reset") closePasswordResetModal();
   else if (action === "delete-user") deleteUser(parseInt(btn.dataset.userId, 10), btn.dataset.username);
   else if (action === "revoke-session") revokeSession(btn.dataset.sessionId);
+  else if (action === "unblock-ip") unblockIp(btn.dataset.ip || "");
 });
 
 document.getElementById("create-user-form").addEventListener("submit", createUser);
+document.getElementById("security-settings-form")?.addEventListener("submit", saveSecuritySettings);
 if (passwordResetForm) passwordResetForm.addEventListener("submit", submitPasswordReset);
 
 if (passwordResetModal) {

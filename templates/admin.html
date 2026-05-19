@@ -54,6 +54,36 @@
     <div class="panel">
       <div class="panel-header">
         <div>
+          <h2>Login security</h2>
+        </div>
+      </div>
+      <form id="security-settings-form" class="connection-form">
+        <div class="field">
+          <label for="security-login-rate-limit">Attempts per IP</label>
+          <input id="security-login-rate-limit" type="number" min="1" max="100" required />
+        </div>
+        <div class="field">
+          <label for="security-login-rate-window">IP window (minutes)</label>
+          <input id="security-login-rate-window" type="number" min="1" max="1440" required />
+        </div>
+        <div class="field">
+          <label for="security-lockout-threshold">Attempts per user</label>
+          <input id="security-lockout-threshold" type="number" min="1" max="100" required />
+        </div>
+        <div class="field">
+          <label for="security-lockout-duration">User lockout (minutes)</label>
+          <input id="security-lockout-duration" type="number" min="1" max="1440" required />
+        </div>
+        <button type="submit">Save security settings</button>
+      </form>
+      <hr>
+      <h3>Blocked IPs</h3>
+      <div id="blocked-ips-table" class="loading-state">Loading...</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
           <h2>Stack</h2>
         </div>
       </div>
@@ -98,5 +128,5 @@
   </div>
 </div>
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260519b"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260519c"></script>
 {% endblock %}

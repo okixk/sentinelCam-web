@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Auth
     session_max_age_hours: int = 8
     login_rate_limit: int = 5
+    login_rate_limit_window_minutes: int = 15
     lockout_threshold: int = 10
     lockout_duration_minutes: int = 30
     min_password_length: int = 12

@@ -13,7 +13,9 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import User, check_csrf, require_admin
 from app.config import settings
 from app.database import get_db
+from app.runtime_settings import apply_security_config, get_security_config, save_security_config
 from app.security import hash_password
+from app.security import login_rate_limiter
 from app.thumbnail_jobs import get_thumbnail_job_stats
 
 log = logging.getLogger("sentinelCam.dashboard")
@@ -168,6 +170,63 @@ async def delete_user(
 
     _audit("admin.user.delete", admin=admin.username, target=row["username"])
     return JSONResponse({"ok": True})
+
+
+class SecuritySettingsRequest(BaseModel):
+    login_rate_limit: int
+    login_rate_limit_window_minutes: int
+    lockout_threshold: int
+    lockout_duration_minutes: int
+
+
+class UnblockIpRequest(BaseModel):
+    ip: str
+
+    @field_validator("ip")
+    @classmethod
+    def validate_ip(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 128:
+            raise ValueError("ip is required")
+        return value
+
+
+@router.get("/api/admin/security")
+async def get_security_status(admin: User = Depends(require_admin)):
+    return JSONResponse(
+        {
+            "settings": get_security_config().as_dict(),
+            "blocked_ips": login_rate_limiter.blocked_ips(),
+        }
+    )
+
+
+@router.patch("/api/admin/security/settings")
+async def update_security_settings(
+    body: SecuritySettingsRequest,
+    request: Request,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    try:
+        config = await save_security_config(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    apply_security_config(config)
+    _audit("admin.security.update", admin=admin.username, settings=config.as_dict())
+    return JSONResponse({"ok": True, "settings": config.as_dict()})
+
+
+@router.post("/api/admin/security/blocked-ips/unblock")
+async def unblock_ip(
+    body: UnblockIpRequest,
+    request: Request,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    removed = login_rate_limiter.unblock(body.ip)
+    _audit("admin.security.unblock_ip", admin=admin.username, ip=body.ip, removed=removed)
+    return JSONResponse({"ok": True, "removed": removed})
 
 
 @router.get("/api/admin/sessions")

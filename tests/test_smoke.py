@@ -17,6 +17,7 @@ class ModuleImportTests(unittest.TestCase):
         for module_name in (
             "app.config",
             "app.database",
+            "app.runtime_settings",
             "app.storage",
             "app.security",
             "app.thumbnail_jobs",
@@ -38,6 +39,7 @@ class ModuleImportTests(unittest.TestCase):
         self.assertIn("/auth/login", paths)
         self.assertIn("/gallery", paths)
         self.assertIn("/api/recordings/upload", paths)
+        self.assertIn("/api/admin/security", paths)
         self.assertIn("/admin", paths)
 
     def test_no_legacy_proxy_router(self) -> None:
