@@ -35,6 +35,11 @@ HOP_BY_HOP_HEADERS = {
     "trailers",
     "transfer-encoding",
     "upgrade",
+    # Strip cookies and auth coming from the worker so its session/auth state
+    # never leaks into the web browser's origin.
+    "set-cookie",
+    "cookie",
+    "www-authenticate",
 }
 
 SHUTDOWN_COMMANDS = {"q", "quit", "exit", "stop"}
@@ -70,15 +75,15 @@ def _worker_client(request: Request) -> httpx.AsyncClient:
 def _proxy_error_response(path: str, error: Exception, *, detail: str = "proxy request failed") -> JSONResponse:
     _worker_proxy_status["last_attempt_at"] = time.time()
     _worker_proxy_status["last_error_at"] = time.time()
+    # Keep the verbose error string only in server-side status (visible via
+    # /api/admin/ops) — do not echo it to the browser, where it would leak
+    # internal worker URLs and internal exception strings.
     _worker_proxy_status["last_error"] = f"{detail}: {error}"
     _worker_proxy_status["last_path"] = path
     _worker_proxy_status["last_status_code"] = 502
+    log.warning("Worker proxy %s failed: %s", path, error)
     return JSONResponse(
-        {
-            "ok": False,
-            "error": f"{detail}: {error}",
-            "upstream": _worker_url(path),
-        },
+        {"ok": False, "error": detail},
         status_code=502,
     )
 
@@ -302,7 +307,7 @@ async def proxy_webrtc_offer_get(request: Request, user: User = Depends(get_curr
 
 
 @router.get("/health")
-async def health(request: Request):
+async def health(request: Request, user: User = Depends(get_current_user)):
     try:
         resp = await _worker_client(request).get(_worker_url("/health"), headers=_worker_headers())
         _mark_worker_success("/health", resp.status_code)

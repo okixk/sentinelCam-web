@@ -61,6 +61,11 @@ def _thumbnail_source_and_path(row: Mapping[str, object]) -> tuple[Path, Path, s
     return src_path, thumb_path, media_type
 
 
+# Cap PIL decoding to defend against decompression-bomb uploads. ~64 MP is
+# more than enough for any reasonable camera frame.
+_PIL_MAX_PIXELS = 64 * 1024 * 1024
+
+
 def _generate_thumbnail_sync(src_path: Path, thumb_path: Path, media_type: str) -> None:
     thumb_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = thumb_path.with_name(f"{thumb_path.stem}.{uuid.uuid4().hex}.tmp")
@@ -89,14 +94,20 @@ def _generate_thumbnail_sync(src_path: Path, thumb_path: Path, media_type: str) 
         else:
             from PIL import Image
 
-            with Image.open(src_path) as img:
-                if img.mode not in ("RGB", "L"):
-                    rgba = img.convert("RGBA")
-                    background = Image.new("RGB", rgba.size, (18, 22, 26))
-                    background.paste(rgba, mask=rgba.getchannel("A"))
-                    img = background
-                img.thumbnail((200, 200))
-                img.save(str(tmp_path), "JPEG", quality=85)
+            prev_limit = Image.MAX_IMAGE_PIXELS
+            Image.MAX_IMAGE_PIXELS = _PIL_MAX_PIXELS
+            try:
+                with Image.open(src_path) as img:
+                    img.load()
+                    if img.mode not in ("RGB", "L"):
+                        rgba = img.convert("RGBA")
+                        background = Image.new("RGB", rgba.size, (18, 22, 26))
+                        background.paste(rgba, mask=rgba.getchannel("A"))
+                        img = background
+                    img.thumbnail((200, 200))
+                    img.save(str(tmp_path), "JPEG", quality=85)
+            finally:
+                Image.MAX_IMAGE_PIXELS = prev_limit
 
         tmp_path.replace(thumb_path)
     finally:

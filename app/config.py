@@ -15,7 +15,6 @@ class Settings(BaseSettings):
     public: bool = Field(default=False, validation_alias=AliasChoices("SC_PUBLIC"))
 
     # Auth
-    secret_key: str = ""  # auto-generated if empty, but should be set in production
     session_max_age_hours: int = 8
     login_rate_limit: int = 5
     lockout_threshold: int = 10
@@ -42,7 +41,6 @@ class Settings(BaseSettings):
     @field_validator(
         "worker_base_url",
         "worker_token",
-        "secret_key",
         "webauthn_rp_id",
         "webauthn_rp_name",
         "initial_admin_user",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi import Depends, HTTPException, Request, status
 
 from app.database import get_db
 
@@ -96,12 +96,43 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def _same_origin(request: Request) -> bool:
+    """Defense-in-depth: state-changing requests must originate from the same site."""
+    origin = request.headers.get("origin") or ""
+    referer = request.headers.get("referer") or ""
+    if not origin and not referer:
+        # Some browsers strip both for privacy on same-origin requests; allow.
+        return True
+    expected_host = request.headers.get("host", "")
+    expected_scheme = (
+        "https"
+        if request.url.scheme == "https"
+        or (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower() == "https"
+        else "http"
+    )
+    expected_prefix = f"{expected_scheme}://{expected_host}"
+    if origin:
+        return origin == expected_prefix
+    return referer.startswith(expected_prefix + "/") or referer == expected_prefix
+
+
 async def check_csrf(request: Request) -> None:
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return
+    if not _same_origin(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"ok": False, "error": "Cross-origin request blocked"},
+        )
     csrf_cookie = request.cookies.get("csrf_token")
     csrf_header = request.headers.get("x-csrf-token")
-    if not csrf_cookie or not csrf_header or csrf_cookie != csrf_header:
+    if not csrf_cookie or not csrf_header:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"ok": False, "error": "CSRF token missing"},
+        )
+    import secrets as _secrets
+    if not _secrets.compare_digest(csrf_cookie, csrf_header):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"ok": False, "error": "CSRF token mismatch"},

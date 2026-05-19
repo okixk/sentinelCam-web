@@ -20,6 +20,10 @@ _ph = PasswordHasher(
     salt_len=16,
 )
 
+# Pre-computed dummy hash used to keep the cost of a "user not found" path
+# indistinguishable from a "wrong password" path, blocking timing oracles.
+_DUMMY_HASH = _ph.hash("sentinelcam-dummy-password-for-timing-safety")
+
 
 def hash_password(password: str) -> str:
     return _ph.hash(password)
@@ -30,6 +34,14 @@ def verify_password(password: str, hash_value: str) -> bool:
         return _ph.verify(hash_value, password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
+
+
+def dummy_verify() -> None:
+    """Burn one argon2 verify so timing matches the real path."""
+    try:
+        _ph.verify(_DUMMY_HASH, "wrong-password")
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        return
 
 
 def generate_session_id() -> str:

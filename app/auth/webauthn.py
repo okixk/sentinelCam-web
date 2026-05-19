@@ -21,6 +21,7 @@ log = logging.getLogger("sentinelCam.webauthn")
 # Temporary in-memory challenge store (session-based in practice)
 # Key: session_id or username, Value: challenge bytes
 _CHALLENGE_TTL_SECONDS = 300
+_MAX_PENDING_CHALLENGES = 1024
 _pending_challenges: dict[str, tuple[bytes, float]] = {}
 
 
@@ -34,6 +35,12 @@ def _purge_expired_challenges(now: float | None = None) -> None:
 def store_challenge(key: str, challenge: bytes) -> None:
     now = time.time()
     _purge_expired_challenges(now)
+    # Hard cap: under sustained abuse, drop the oldest entries first so legit
+    # in-flight ceremonies still have room. Combined with rate limiting at
+    # the route layer this keeps memory bounded.
+    if len(_pending_challenges) >= _MAX_PENDING_CHALLENGES:
+        for stale_key, _ in sorted(_pending_challenges.items(), key=lambda kv: kv[1][1])[: max(1, _MAX_PENDING_CHALLENGES // 8)]:
+            _pending_challenges.pop(stale_key, None)
     _pending_challenges[key] = (challenge, now + _CHALLENGE_TTL_SECONDS)
 
 

@@ -96,12 +96,13 @@ async def upload_recording(
 
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
 
-    # Determine MIME type
-    overlay_mime = overlay_file.content_type or ""
-    if type == "image" and overlay_mime not in ALLOWED_MIME_IMAGE:
-        overlay_mime = "image/jpeg"  # default fallback
-    if type == "video" and overlay_mime not in ALLOWED_MIME_VIDEO:
-        overlay_mime = "video/webm"
+    # Reject content types we don't accept instead of silently coercing — a
+    # mismatched content-type is almost always a misconfigured client or an
+    # attacker probing the upload path.
+    allowed_overlay = ALLOWED_MIME_IMAGE if type == "image" else ALLOWED_MIME_VIDEO
+    overlay_mime = (overlay_file.content_type or "").lower()
+    if overlay_mime not in allowed_overlay:
+        raise HTTPException(415, f"Unsupported overlay content type for {type}")
 
     rec_dir = _get_recordings_dir(user.id)
     file_uuid = str(uuid.uuid4()).replace("-", "")
@@ -116,10 +117,9 @@ async def upload_recording(
 
     raw_filename = None
     raw_size = 0
-    if raw_file:
-        raw_mime = raw_file.content_type or ("image/jpeg" if type == "image" else overlay_mime or "video/webm")
-        allowed_mimes = ALLOWED_MIME_IMAGE if type == "image" else ALLOWED_MIME_VIDEO
-        if raw_mime in allowed_mimes:
+    if raw_file is not None and getattr(raw_file, "filename", ""):
+        raw_mime = (raw_file.content_type or "").lower()
+        if raw_mime in allowed_overlay:
             raw_uuid = str(uuid.uuid4()).replace("-", "")
             raw_ext = EXTENSION_MAP.get(raw_mime, "jpg" if type == "image" else "webm")
             candidate_raw_filename = f"{raw_uuid}_raw.{raw_ext}"
@@ -238,7 +238,7 @@ async def list_recordings(
         )
         rows = await cursor.fetchall()
 
-    schedule_thumbnail_warmup(int(r["id"]) for r in rows[: min(len(rows), 12)])
+    schedule_thumbnail_warmup(int(r["id"]) for r in rows[:12])
 
     return JSONResponse({
         "items": [dict(r) for r in rows],
@@ -287,8 +287,13 @@ async def serve_recording_file(
     else:
         fname = row["overlay_filename"] or row["filename"]
 
-    path = Path(settings.recordings_path) / str(row["user_id"]) / fname
-    if not path.exists():
+    rec_dir = (Path(settings.recordings_path) / str(row["user_id"])).resolve()
+    try:
+        path = (rec_dir / fname).resolve(strict=False)
+        path.relative_to(rec_dir)
+    except (ValueError, OSError):
+        raise HTTPException(404, "Recording not found")
+    if not path.exists() or not path.is_file():
         raise HTTPException(404, "File not found on disk")
 
     ext = path.suffix.lower()
@@ -351,16 +356,28 @@ async def delete_recording(
         await conn.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
         await conn.commit()
 
-    rec_dir = Path(settings.recordings_path) / str(row["user_id"])
+    rec_dir = (Path(settings.recordings_path) / str(row["user_id"])).resolve()
+    seen: set[Path] = set()
     for fname in (row["filename"], row["overlay_filename"], row["raw_filename"]):
-        if fname:
-            p = rec_dir / fname
-            if p.exists():
-                p.unlink(missing_ok=True)
-            # Also remove thumbnail
-            thumb = rec_dir / f"thumb_{fname.rsplit('.', 1)[0]}.jpg"
-            if thumb.exists():
-                thumb.unlink(missing_ok=True)
+        if not fname:
+            continue
+        try:
+            p = (rec_dir / fname).resolve(strict=False)
+            p.relative_to(rec_dir)
+        except (ValueError, OSError):
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        if p.exists() and p.is_file():
+            p.unlink(missing_ok=True)
+        thumb = (rec_dir / f"thumb_{Path(fname).stem}.jpg").resolve(strict=False)
+        try:
+            thumb.relative_to(rec_dir)
+        except (ValueError, OSError):
+            continue
+        if thumb.exists() and thumb.is_file():
+            thumb.unlink(missing_ok=True)
 
     _audit("recording.delete", username=user.username, id=recording_id)
     return JSONResponse({"ok": True})

@@ -135,7 +135,7 @@ async def gallery_data(
         )
         rows = await cursor.fetchall()
 
-    schedule_thumbnail_warmup(int(row["id"]) for row in rows[: min(len(rows), 12)])
+    schedule_thumbnail_warmup(int(row["id"]) for row in rows[:12])
 
     return JSONResponse(
         {

@@ -5,9 +5,8 @@ import json
 import logging
 import secrets
 import time
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
@@ -16,6 +15,7 @@ from app.auth.dependencies import User, check_csrf, get_current_user, _get_sessi
 from app.config import settings
 from app.database import get_db
 from app.security import (
+    dummy_verify,
     generate_csrf_token,
     generate_session_id,
     hash_password,
@@ -39,6 +39,13 @@ def _request_is_secure(request: Request) -> bool:
     return request.url.scheme == "https" or forwarded_proto == "https"
 
 
+def _effective_origin(request: Request) -> str:
+    """Origin as the browser sees it — must account for HTTPS termination upstream."""
+    scheme = "https" if _request_is_secure(request) else request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.url.netloc
+    return f"{scheme}://{host}"
+
+
 def _request_fingerprint(request: Request) -> str:
     ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "")[:256]
@@ -46,13 +53,41 @@ def _request_fingerprint(request: Request) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+_WEBAUTHN_CEREMONY_COOKIE = "wa_ceremony"
+
+
 def _webauthn_registration_key(request: Request, user_id: int) -> str:
+    # Registration runs while the user is already logged in, so the session
+    # cookie binds the ceremony tightly to one browser.
     session_id = request.cookies.get("session") or _request_fingerprint(request)
     return f"reg:{user_id}:{session_id}"
 
 
-def _webauthn_login_key(request: Request, username: str) -> str:
-    return f"auth:{username}:{_request_fingerprint(request)}"
+def _ensure_ceremony_token(request: Request) -> str:
+    token = request.cookies.get(_WEBAUTHN_CEREMONY_COOKIE) or ""
+    if len(token) < 32 or not token.replace("-", "").replace("_", "").isalnum():
+        token = secrets.token_urlsafe(32)
+        request.state.new_ceremony_token = token
+    return token
+
+
+def _webauthn_login_key(token: str, username: str) -> str:
+    return f"auth:{username}:{token}"
+
+
+def _attach_ceremony_cookie(request: Request, response: Response) -> None:
+    token = getattr(request.state, "new_ceremony_token", None)
+    if not token:
+        return
+    response.set_cookie(
+        _WEBAUTHN_CEREMONY_COOKIE,
+        token,
+        httponly=True,
+        samesite="strict",
+        secure=_request_is_secure(request),
+        path="/auth",
+        max_age=600,
+    )
 
 
 def _set_session_cookies(request: Request, response: Response, session_id: str, csrf_token: str) -> None:
@@ -136,17 +171,19 @@ async def login(request: Request, body: LoginRequest):
         user_row = await cursor.fetchone()
 
     if not user_row:
+        # Burn the same argon2 cycle to keep timing indistinguishable from
+        # the "user exists but password wrong" branch.
+        dummy_verify()
         _audit("auth.login.failure", username=body.username, ip=ip, reason="user_not_found")
         return JSONResponse({"ok": False, "error": "Invalid credentials"}, status_code=401)
 
     now = time.time()
     locked_until = user_row["locked_until"]
     if locked_until and locked_until > now:
-        minutes = int((locked_until - now) / 60) + 1
         _audit("auth.login.failure", username=body.username, ip=ip, reason="locked")
         return JSONResponse(
-            {"ok": False, "error": f"Account locked. Try again in {minutes} minutes."},
-            status_code=403,
+            {"ok": False, "error": "Invalid credentials"},
+            status_code=401,
         )
 
     if not verify_password(body.password, user_row["password_hash"]):
@@ -244,7 +281,7 @@ async def webauthn_register_complete(
     if not challenge:
         raise HTTPException(400, "No pending registration challenge")
 
-    origin = f"{request.url.scheme}://{request.url.netloc}"
+    origin = _effective_origin(request)
     rp_id = request.url.hostname or settings.webauthn_rp_id
     try:
         result = verify_registration_response(
@@ -254,9 +291,13 @@ async def webauthn_register_complete(
             origin=origin,
         )
     except Exception as e:
-        raise HTTPException(400, f"Registration verification failed: {e}")
+        log.warning("WebAuthn registration verification failed for %s: %s", user.username, e)
+        raise HTTPException(400, "Registration verification failed")
 
-    name = body.get("name", "Passkey")[:64]
+    raw_name = body.get("name", "Passkey")
+    if not isinstance(raw_name, str):
+        raw_name = "Passkey"
+    name = (raw_name.strip() or "Passkey")[:64]
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO webauthn_credentials (user_id, credential_id, public_key, sign_count, name) "
@@ -272,10 +313,16 @@ async def webauthn_register_complete(
 @router.post("/webauthn/login/begin")
 async def webauthn_login_begin(request: Request):
     from app.auth.webauthn import generate_authentication_options, store_challenge
-    body = await request.json()
-    username = body.get("username", "").strip()
+    ip = request.client.host if request.client else "unknown"
 
-    if not username:
+    if not login_rate_limiter.is_allowed(ip):
+        _audit("auth.webauthn.ratelimit", ip=ip)
+        raise HTTPException(429, "Too many login attempts. Try again later.")
+    login_rate_limiter.record_attempt(ip)
+
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    if not username or len(username) > 64:
         raise HTTPException(400, "username required")
 
     async with get_db() as conn:
@@ -287,9 +334,9 @@ async def webauthn_login_begin(request: Request):
         )
         rows = await cursor.fetchall()
 
-    if not rows:
-        raise HTTPException(404, "No passkeys registered for this user")
-
+    # Always return a well-formed options payload, even if the user has no
+    # passkeys or doesn't exist. This avoids leaking user existence; the
+    # ceremony will fail later with a generic "Authentication failed".
     credentials = [{"credential_id": bytes(r["credential_id"])} for r in rows]
     rp_id = request.url.hostname or settings.webauthn_rp_id
     options = generate_authentication_options(credentials, rp_id=rp_id)
@@ -297,24 +344,37 @@ async def webauthn_login_begin(request: Request):
     from webauthn.helpers import base64url_to_bytes
     challenge_b64 = options.get("challenge", "")
     challenge_bytes = base64url_to_bytes(challenge_b64) if isinstance(challenge_b64, str) else challenge_b64
-    store_challenge(_webauthn_login_key(request, username), challenge_bytes)
+    ceremony_token = _ensure_ceremony_token(request)
+    store_challenge(_webauthn_login_key(ceremony_token, username), challenge_bytes)
 
-    return JSONResponse(options)
+    response = JSONResponse(options)
+    _attach_ceremony_cookie(request, response)
+    return response
 
 
 @router.post("/webauthn/login/complete")
 async def webauthn_login_complete(request: Request):
     from app.auth.webauthn import verify_authentication_response, pop_challenge
+    ip = request.client.host if request.client else "unknown"
+
+    if not login_rate_limiter.is_allowed(ip):
+        _audit("auth.webauthn.ratelimit", ip=ip)
+        raise HTTPException(429, "Too many login attempts. Try again later.")
+    login_rate_limiter.record_attempt(ip)
+
     body = await request.json()
-    username = body.get("username", "").strip()
-    credential_response = body.get("credential", {})
+    username = (body.get("username") or "").strip()
+    credential_response = body.get("credential") or {}
 
-    if not username:
-        raise HTTPException(400, "username required")
+    if not username or len(username) > 64 or not isinstance(credential_response, dict):
+        raise HTTPException(400, "Authentication failed")
 
-    challenge = pop_challenge(_webauthn_login_key(request, username))
+    ceremony_token = request.cookies.get(_WEBAUTHN_CEREMONY_COOKIE) or ""
+    if not ceremony_token:
+        raise HTTPException(400, "Authentication failed")
+    challenge = pop_challenge(_webauthn_login_key(ceremony_token, username))
     if not challenge:
-        raise HTTPException(400, "No pending authentication challenge")
+        raise HTTPException(400, "Authentication failed")
 
     async with get_db() as conn:
         cursor = await conn.execute(
@@ -326,9 +386,10 @@ async def webauthn_login_complete(request: Request):
         rows = await cursor.fetchall()
 
     if not rows:
-        raise HTTPException(404, "No credentials found")
+        _audit("auth.webauthn.failure", username=username, ip=ip, reason="no_credentials")
+        raise HTTPException(400, "Authentication failed")
 
-    origin = f"{request.url.scheme}://{request.url.netloc}"
+    origin = _effective_origin(request)
     matched_row = None
     new_sign_count = 0
     rp_id = request.url.hostname or settings.webauthn_rp_id
@@ -348,7 +409,8 @@ async def webauthn_login_complete(request: Request):
             continue
 
     if not matched_row:
-        raise HTTPException(400, "Authentication verification failed")
+        _audit("auth.webauthn.failure", username=username, ip=ip, reason="verification_failed")
+        raise HTTPException(400, "Authentication failed")
 
     # Update sign count
     async with get_db() as conn:

@@ -1,5 +1,9 @@
 .runtime/
-.env/
+.env
+.env.*
+!.env.example
+.venv/
+venv/
 __pycache__/
 .DS_Store
 run.bat

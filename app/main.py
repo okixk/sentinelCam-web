@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import secrets
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -55,6 +54,8 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
     if is_secure:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
@@ -68,9 +69,10 @@ async def security_headers_middleware(request: Request, call_next):
             f"default-src 'self'; "
             f"script-src 'self' 'nonce-{nonce}'; "
             f"style-src 'self' 'unsafe-inline'; "
-            f"img-src 'self' blob: data: http: https:; "
-            f"media-src 'self' blob: http: https:; "
-            f"connect-src 'self' http: https:; "
+            f"img-src 'self' blob: data:; "
+            f"media-src 'self' blob:; "
+            f"connect-src 'self'; "
+            f"object-src 'none'; "
             f"frame-ancestors 'none'; "
             f"base-uri 'self'; "
             f"form-action 'self'"
