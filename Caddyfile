@@ -1,9 +1,8 @@
 # Caddy is the only HTTP/HTTPS ingress for the stack.
 #
-# Without SC_PUBLIC_HOSTNAME set, the default hostname is `sentinelcam.local`
-# and Caddy uses its built-in local CA ("tls internal"). Set SC_PUBLIC_HOSTNAME
-# (real DNS name) + SC_TLS_EMAIL (your email) in .env to switch to Let's
-# Encrypt.
+# Port 80 intentionally serves the app for any hostname. This makes the default
+# Docker start reachable as http://<host>/ without requiring SC_PUBLIC_HOSTNAME
+# to match first.
 
 {
 	auto_https disable_redirects
@@ -17,8 +16,7 @@
 	}
 }
 
-{$SC_PUBLIC_HOSTNAME:sentinelcam.local} {
-	tls {$SC_TLS_EMAIL:internal}
+:80 {
 	encode zstd gzip
 
 	reverse_proxy web:3000 {
@@ -28,7 +26,13 @@
 	}
 }
 
-# Plain-HTTP -> HTTPS redirect for the same hostname.
-http://{$SC_PUBLIC_HOSTNAME:sentinelcam.local} {
-	redir https://{host}{uri} permanent
+{$SC_PUBLIC_HOSTNAME:sentinelcam.local} {
+	tls {$SC_TLS_EMAIL:internal}
+	encode zstd gzip
+
+	reverse_proxy web:3000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+		flush_interval -1
+	}
 }
