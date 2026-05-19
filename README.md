@@ -325,6 +325,45 @@ curl http://127.0.0.1:8080/health
 
 Log in to the web app with `ADMIN_USER` / `ADMIN_PASSWORD` from `.env`.
 
+## 6.5 TLS With The Bundled Caddy Overlay
+
+For anything beyond a single-machine demo you should put TLS in front of the
+web service. The repo ships a Caddy sidecar overlay that handles this for you
+and removes the direct port-80 binding of the web container.
+
+```bash
+# Optional: set a real hostname + email for Let's Encrypt
+echo "SC_PUBLIC_HOSTNAME=cam.example.com" >> .env
+echo "SC_TLS_EMAIL=you@example.com"      >> .env
+
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+```
+
+What changes:
+
+- Caddy listens on `80` + `443` (TCP + UDP for HTTP/3). Plain HTTP is 301'd
+  to HTTPS.
+- The `web` container stops publishing its own port; the only ingress is
+  Caddy on the internal Docker network.
+- The web app is started with `SC_FORWARDED_ALLOW_IPS=*` so it honors the
+  `X-Forwarded-Proto` / `X-Forwarded-Host` headers Caddy injects. This is
+  safe because Caddy is the only peer that can reach the web service in
+  this topology.
+
+Defaults:
+
+- If `SC_PUBLIC_HOSTNAME` is unset, Caddy serves `sentinelcam.local` with
+  its built-in local CA. Browsers will warn on first visit; import
+  `/data/caddy/pki/authorities/local/root.crt` from inside the `caddy`
+  container into your trust store to silence the warning on your own
+  devices.
+- If `SC_PUBLIC_HOSTNAME` resolves to a public IP and `SC_TLS_EMAIL` is set,
+  Caddy provisions a real Let's Encrypt certificate automatically.
+
+Without this overlay the bare `docker-compose.yml` exposes the web app on
+port 80 in cleartext. That is fine for local LAN testing but should not be
+used over the public internet.
+
 ## 7. Stop The Stack
 
 Stop Docker services:

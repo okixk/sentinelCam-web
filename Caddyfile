@@ -1,0 +1,38 @@
+{
+	# Caddy refuses to enable TLS without a hostname. We default to
+	# sentinelcam.local with Caddy's built-in local CA ("tls internal"),
+	# which works offline; set SC_PUBLIC_HOSTNAME + SC_TLS_EMAIL in the
+	# environment to switch to a real ACME issuer (e.g. Let's Encrypt).
+	auto_https disable_redirects
+	servers {
+		# Long-running MJPEG / WebRTC SDP responses must not be buffered.
+		timeouts {
+			read_body 30s
+			read_header 10s
+			idle 5m
+		}
+	}
+}
+
+{$SC_PUBLIC_HOSTNAME:sentinelcam.local} {
+	# When SC_TLS_EMAIL is unset, "internal" tells Caddy to use its local
+	# CA instead of ACME. The browser will warn the first time you connect;
+	# import /data/caddy/pki/authorities/local/root.crt into your trust store
+	# to make the warning go away on your own machines.
+	tls {$SC_TLS_EMAIL:internal}
+
+	encode zstd gzip
+
+	# Forward everything to the FastAPI container. flush_interval=-1 keeps
+	# MJPEG / SSE chunks streaming without proxy buffering.
+	reverse_proxy web:3000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+		flush_interval -1
+	}
+}
+
+# Plain-HTTP -> HTTPS redirect for the same hostname.
+http://{$SC_PUBLIC_HOSTNAME:sentinelcam.local} {
+	redir https://{host}{uri} permanent
+}
