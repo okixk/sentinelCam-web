@@ -12,22 +12,6 @@
     <div class="panel">
       <div class="panel-header">
         <div>
-          <h2>Worker status</h2>
-        </div>
-      </div>
-      <div id="worker-status" class="loading-state">Loading...</div>
-      <div class="row" style="margin-top:12px;">
-        <button data-action="admin-cmd" data-cmd="n" data-label="Prev model" class="secondary">Prev</button>
-        <button data-action="admin-cmd" data-cmd="m" data-label="Next model" class="secondary">Next</button>
-        <button data-action="admin-cmd" data-cmd="p" data-label="Toggle pose" class="secondary">Pose</button>
-        <button data-action="admin-cmd" data-cmd="o" data-label="Toggle overlay" class="secondary">Overlay</button>
-        <button data-action="admin-cmd" data-cmd="i" data-label="Toggle inference" class="secondary">Infer</button>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
           <h2>Users</h2>
         </div>
       </div>
@@ -70,7 +54,7 @@
     <div class="panel">
       <div class="panel-header">
         <div>
-          <h2>Startup</h2>
+          <h2>Stack</h2>
         </div>
       </div>
       <div id="system-info" class="stack-notes loading-state">Loading...</div>
@@ -113,5 +97,6 @@
     </form>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260323f"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260519a"></script>
 {% endblock %}

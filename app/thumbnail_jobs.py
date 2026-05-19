@@ -2,19 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 import time
 import uuid
 from collections.abc import Iterable, Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Optional
 
-from app.config import settings
 from app.database import get_db
+from app.storage import (
+    delete_object,
+    get_bytes,
+    object_exists,
+    put_bytes,
+    recording_key,
+    thumbnail_key,
+)
 
 log = logging.getLogger("sentinelCam.thumbnails")
 
 _PENDING_RECORDINGS: set[int] = set()
 _TASKS: set[asyncio.Task[None]] = set()
-_INFLIGHT: dict[int, asyncio.Future[Path]] = {}
+_INFLIGHT: dict[int, asyncio.Future[str]] = {}
 _STATS: dict[str, object] = {
     "completed_count": 0,
     "failed_count": 0,
@@ -25,7 +34,7 @@ _STATS: dict[str, object] = {
 }
 
 
-def _consume_future_exception(future: asyncio.Future[Path]) -> None:
+def _consume_future_exception(future: asyncio.Future[str]) -> None:
     if future.cancelled():
         return
     try:
@@ -48,78 +57,110 @@ def _mark_thumbnail_failure(recording_id: int, error: Exception) -> None:
     _STATS["last_recording_id"] = recording_id
 
 
-def _thumbnail_source_and_path(row: Mapping[str, object]) -> tuple[Path, Path, str]:
+def _safe_basename(filename: str | None) -> str | None:
+    if not filename:
+        return None
+    s = str(filename)
+    if "/" in s or "\\" in s or ".." in s:
+        return None
+    return s
+
+
+def _thumbnail_source_and_keys(row: Mapping[str, object]) -> tuple[str, str, str]:
     user_id = int(row["user_id"])
-    filename = row["overlay_filename"] or row["filename"]
+    filename_raw = row["overlay_filename"] or row["filename"]
+    filename = _safe_basename(filename_raw)
     if not filename:
         raise FileNotFoundError("Recording file not found")
 
-    rec_dir = Path(settings.recordings_path) / str(user_id)
-    src_path = rec_dir / str(filename)
-    thumb_path = rec_dir / f"thumb_{src_path.stem}.jpg"
+    src_key = recording_key(user_id, filename)
+    stem = PurePosixPath(filename).stem
+    thumb_key_value = thumbnail_key(user_id, stem)
     media_type = str(row["type"] or "")
-    return src_path, thumb_path, media_type
+    return src_key, thumb_key_value, media_type
 
 
-# Cap PIL decoding to defend against decompression-bomb uploads. ~64 MP is
-# more than enough for any reasonable camera frame.
 _PIL_MAX_PIXELS = 64 * 1024 * 1024
 
 
-def _generate_thumbnail_sync(src_path: Path, thumb_path: Path, media_type: str) -> None:
-    thumb_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = thumb_path.with_name(f"{thumb_path.stem}.{uuid.uuid4().hex}.tmp")
+def _make_image_thumbnail_bytes(src_bytes: bytes) -> bytes:
+    from io import BytesIO
 
+    from PIL import Image
+
+    prev_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = _PIL_MAX_PIXELS
     try:
-        if media_type == "video":
-            import cv2
-
-            cap = cv2.VideoCapture(str(src_path))
-            try:
-                ok, frame = cap.read()
-            finally:
-                cap.release()
-            if not ok or frame is None:
-                raise RuntimeError("Could not decode video frame")
-            resized = frame
-            height, width = frame.shape[:2]
-            max_dim = max(width, height)
-            if max_dim > 200:
-                scale = 200.0 / max_dim
-                resized = cv2.resize(frame, (max(1, int(width * scale)), max(1, int(height * scale))))
-            ok, encoded = cv2.imencode(".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            if not ok:
-                raise RuntimeError("Could not encode video thumbnail")
-            tmp_path.write_bytes(encoded.tobytes())
-        else:
-            from PIL import Image
-
-            prev_limit = Image.MAX_IMAGE_PIXELS
-            Image.MAX_IMAGE_PIXELS = _PIL_MAX_PIXELS
-            try:
-                with Image.open(src_path) as img:
-                    img.load()
-                    if img.mode not in ("RGB", "L"):
-                        rgba = img.convert("RGBA")
-                        background = Image.new("RGB", rgba.size, (18, 22, 26))
-                        background.paste(rgba, mask=rgba.getchannel("A"))
-                        img = background
-                    img.thumbnail((200, 200))
-                    img.save(str(tmp_path), "JPEG", quality=85)
-            finally:
-                Image.MAX_IMAGE_PIXELS = prev_limit
-
-        tmp_path.replace(thumb_path)
+        with Image.open(BytesIO(src_bytes)) as img:
+            img.load()
+            if img.mode not in ("RGB", "L"):
+                rgba = img.convert("RGBA")
+                background = Image.new("RGB", rgba.size, (18, 22, 26))
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                img = background
+            img.thumbnail((200, 200))
+            buf = BytesIO()
+            img.save(buf, "JPEG", quality=85)
+            return buf.getvalue()
     finally:
-        tmp_path.unlink(missing_ok=True)
+        Image.MAX_IMAGE_PIXELS = prev_limit
 
 
-async def ensure_thumbnail_from_row(row: Mapping[str, object]) -> Path:
-    src_path, thumb_path, media_type = _thumbnail_source_and_path(row)
-    if not src_path.exists():
-        raise FileNotFoundError("File not found")
-    if thumb_path.exists():
-        return thumb_path
+def _make_video_thumbnail_bytes(src_bytes: bytes, suffix: str) -> bytes:
+    import cv2
+
+    suffix = suffix if suffix.startswith(".") else f".{suffix or 'tmp'}"
+    tmp = tempfile.NamedTemporaryFile(prefix="thumb_", suffix=suffix, delete=False)
+    try:
+        tmp.write(src_bytes)
+        tmp.flush()
+        tmp.close()
+        cap = cv2.VideoCapture(tmp.name)
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        if not ok or frame is None:
+            raise RuntimeError("Could not decode video frame")
+        resized = frame
+        height, width = frame.shape[:2]
+        max_dim = max(width, height)
+        if max_dim > 200:
+            scale = 200.0 / max_dim
+            resized = cv2.resize(
+                frame,
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+            )
+        ok, encoded = cv2.imencode(".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            raise RuntimeError("Could not encode video thumbnail")
+        return encoded.tobytes()
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+
+async def _build_and_upload_thumbnail(src_key: str, thumb_key_value: str, media_type: str) -> str:
+    try:
+        src_bytes = await get_bytes(src_key)
+    except FileNotFoundError:
+        raise
+
+    if media_type == "video":
+        suffix = PurePosixPath(src_key).suffix or ".bin"
+        thumb_bytes = await asyncio.to_thread(_make_video_thumbnail_bytes, src_bytes, suffix)
+    else:
+        thumb_bytes = await asyncio.to_thread(_make_image_thumbnail_bytes, src_bytes)
+
+    await put_bytes(thumb_key_value, thumb_bytes, content_type="image/jpeg")
+    return thumb_key_value
+
+
+async def ensure_thumbnail_from_row(row: Mapping[str, object]) -> str:
+    src_key, thumb_key_value, media_type = _thumbnail_source_and_keys(row)
+    if not await object_exists(src_key):
+        raise FileNotFoundError("Recording file not found")
+    if await object_exists(thumb_key_value):
+        return thumb_key_value
 
     recording_id_value = row["id"] if "id" in row.keys() else None
     recording_id = int(recording_id_value) if recording_id_value is not None else None
@@ -133,14 +174,14 @@ async def ensure_thumbnail_from_row(row: Mapping[str, object]) -> Path:
         inflight.add_done_callback(_consume_future_exception)
         _INFLIGHT[recording_id] = inflight
         try:
-            if thumb_path.exists():
+            if await object_exists(thumb_key_value):
                 if not inflight.done():
-                    inflight.set_result(thumb_path)
-                return thumb_path
-            await asyncio.to_thread(_generate_thumbnail_sync, src_path, thumb_path, media_type)
+                    inflight.set_result(thumb_key_value)
+                return thumb_key_value
+            result = await _build_and_upload_thumbnail(src_key, thumb_key_value, media_type)
             if not inflight.done():
-                inflight.set_result(thumb_path)
-            return thumb_path
+                inflight.set_result(result)
+            return result
         except Exception as exc:
             if not inflight.done():
                 inflight.set_exception(exc)
@@ -148,11 +189,10 @@ async def ensure_thumbnail_from_row(row: Mapping[str, object]) -> Path:
         finally:
             _INFLIGHT.pop(recording_id, None)
 
-    await asyncio.to_thread(_generate_thumbnail_sync, src_path, thumb_path, media_type)
-    return thumb_path
+    return await _build_and_upload_thumbnail(src_key, thumb_key_value, media_type)
 
 
-async def ensure_thumbnail(recording_id: int) -> Path:
+async def ensure_thumbnail(recording_id: int) -> str:
     async with get_db() as conn:
         cursor = await conn.execute(
             "SELECT r.id, r.user_id, r.filename, r.overlay_filename, r.type FROM recordings r WHERE r.id = ?",

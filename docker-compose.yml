@@ -1,97 +1,147 @@
-# Single compose file for the full Linux stack.
-# Run everything with:
+# Full sentinelCam stack: web app + reverse proxy + database + object storage + VPN.
+#
+# Bring everything up:
+#   cp .env.example .env   # fill in the secrets first
 #   docker compose up -d --build
 #
-# On Windows/macOS, the worker usually still runs locally.
-# In that case, start only the web service:
-#   docker compose up -d --build web
+# Only Caddy and the VPN need host ports. Everything else lives on the
+# internal `sentinelcam` network. Admin consoles (MinIO, wg-easy) are bound
+# to loopback so they're reachable from the host but not the public internet
+# until you choose to expose them.
+
+name: sentinelcam
+
+networks:
+  sentinelcam:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  minio-data:
+  caddy-data:
+  caddy-config:
+  wireguard-data:
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinelcam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinelcam}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [sentinelcam]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL:-http://127.0.0.1:9001}
+    volumes:
+      - minio-data:/data
+    ports:
+      # Admin console on loopback only. Open an SSH tunnel or reach it via VPN
+      # to use the browser console. The S3 API is internal-only (web container
+      # talks to it on the sentinelcam network).
+      - "127.0.0.1:9001:9001"
+    networks: [sentinelcam]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
   web:
     build:
       context: .
       args:
         PYTHON_VERSION: ${PYTHON_VERSION:-3.14}
-    ports:
-      - "3000:3000"
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     environment:
-      WORKER_BASE_URL: ${WORKER_BASE_URL:-http://host.docker.internal:8080}
-      WORKER_TOKEN: ${WORKER_TOKEN}
       WEB_PORT: ${WEB_PORT:-3000}
       SC_PUBLIC: ${SC_PUBLIC:-1}
+      SC_FORWARDED_ALLOW_IPS: "*"
       INITIAL_ADMIN_USER: ${ADMIN_USER:-admin}
       INITIAL_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
-    volumes:
-      - web-data:/app/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-sentinelcam}
+      POSTGRES_USER: ${POSTGRES_USER:-sentinelcam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:-recordings}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: "false"
+    networks: [sentinelcam]
+    expose:
+      - "3000"
     healthcheck:
       test: ["CMD", "python", "-c",
         "import urllib.request; urllib.request.urlopen('http://localhost:3000/healthz', timeout=5)"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 20s
 
-  worker:
-    build:
-      context: ../sentinelCam-worker
-    network_mode: host
-    environment:
-      WEB_AUTH_TOKEN: ${WORKER_TOKEN:-}
-      WEB_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      YOLO_CONFIG_DIR: /app/.runtime/ultralytics_config
-      SC_WEIGHTS_DIR: /app/.runtime/weights
-      SC_RUNS_DIR: /app/.runtime/runs
-      SC_DATASETS_DIR: /app/.runtime/datasets
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://127.0.0.1:11434}
-      DEFAULT_CONTEXT_ENABLED: ${DEFAULT_CONTEXT_ENABLED:-0}
-      DEFAULT_CONTEXT_SETUP_OLLAMA: ${DEFAULT_CONTEXT_SETUP_OLLAMA:-0}
-      DEFAULT_CONTEXT_PROFILE: ${DEFAULT_CONTEXT_PROFILE:-auto}
-      DEFAULT_CONTEXT_MODEL: ${DEFAULT_CONTEXT_MODEL:-auto}
-    volumes:
-      - ../sentinelCam-worker/.runtime:/app/.runtime
-    command:
-      - "--host"
-      - "${WORKER_BIND_HOST:-0.0.0.0}"
-      - "--port"
-      - "8080"
-      - "--source"
-      - "${WORKER_SOURCE:-0}"
-      - "--device"
-      - "${WORKER_DEVICE:-auto}"
-      - "--no-window"
-      - "--stream"
-      - "${WORKER_STREAM_MODE:-auto}"
-      - "--use-pose"
-      - "--max-fps"
-      - "${WORKER_MAX_FPS:-120}"
-      - "--performance-profile"
-      - "${WORKER_PERFORMANCE_PROFILE:-auto}"
-      - "--stream-quality"
-      - "${WORKER_STREAM_QUALITY:-auto}"
-      - "--jpeg-quality"
-      - "${WORKER_JPEG_QUALITY:-88}"
-      - "--webrtc-codec"
-      - "${WORKER_WEBRTC_CODEC:-auto}"
-      - "--webrtc-bitrate"
-      - "${WORKER_WEBRTC_BITRATE:--1}"
-      - "--webrtc-fps"
-      - "${WORKER_WEBRTC_FPS:-0}"
-      - "--camera-fps"
-      - "${WORKER_CAMERA_FPS:-0}"
-    devices:
-      - "${WORKER_VIDEO_DEVICE:-/dev/video0}:${WORKER_VIDEO_DEVICE:-/dev/video0}"
-    group_add:
-      - video
+  caddy:
+    image: caddy:2
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+    depends_on:
+      - web
+    environment:
+      SC_PUBLIC_HOSTNAME: ${SC_PUBLIC_HOSTNAME:-sentinelcam.local}
+      SC_TLS_EMAIL: ${SC_TLS_EMAIL:-internal}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [sentinelcam]
 
-volumes:
-  web-data:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:14
+    restart: unless-stopped
+    environment:
+      WG_HOST: ${WG_HOST:-localhost}
+      PASSWORD_HASH: ${WG_PASSWORD_HASH:?WG_PASSWORD_HASH must be set in .env (see README)}
+      WG_PORT: ${WG_PORT:-51820}
+      WG_DEFAULT_DNS: ${WG_DEFAULT_DNS:-1.1.1.1}
+      WG_ALLOWED_IPS: ${WG_ALLOWED_IPS:-0.0.0.0/0, ::/0}
+      WG_PERSISTENT_KEEPALIVE: ${WG_PERSISTENT_KEEPALIVE:-25}
+      UI_TRAFFIC_STATS: "true"
+    volumes:
+      - wireguard-data:/etc/wireguard
+    ports:
+      - "${WG_PORT:-51820}:51820/udp"
+      # Admin UI on loopback. SSH tunnel or VPN to reach it.
+      - "127.0.0.1:51821:51821"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.src_valid_mark: "1"
+    networks: [sentinelcam]

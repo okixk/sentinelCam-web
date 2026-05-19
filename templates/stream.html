@@ -1,50 +1,39 @@
 {% extends "base.html" %}
-{% block title %}Stream – sentinelCam{% endblock %}
+{% block title %}Capture – sentinelCam{% endblock %}
 {% block content %}
 <div class="page page-wide">
   <section class="page-hero">
     <div class="page-title-group">
-      <h1>Live stream</h1>
+      <h1>Live capture</h1>
     </div>
     <div class="hero-side">
-      <div id="workerHealthBadge" class="status-badge" data-state="connecting">
+      <div id="captureStatusBadge" class="status-badge" data-state="connecting">
         <span class="status-dot"></span>
-        <span id="workerHealthText">Checking worker</span>
+        <span id="captureStatusText">Idle</span>
       </div>
     </div>
   </section>
 
   <div class="stream-layout">
     <section class="panel stream-panel stream-stage">
-      <div class="viewer" id="stream-container">
-        <div id="busyOverlay" class="busy-overlay">
-          <div class="busy-card">
-            <div class="busy-head">
-              <div class="spinner"></div>
-              <div>
-                <div id="busyTitle">Switching model...</div>
-              </div>
-            </div>
-            <div class="progress"></div>
-          </div>
-        </div>
-        <div id="streamPlaceholder" class="stream-placeholder">Connecting...</div>
-        <video id="stream" class="stream-media" autoplay playsinline muted aria-label="Live camera feed"></video>
-        <img id="streamFallback" class="stream-media" alt="sentinelCam MJPEG fallback" />
+      <div class="viewer" id="capture-container">
+        <div id="capturePlaceholder" class="stream-placeholder">Camera off</div>
+        <video id="capture-preview" class="stream-media" autoplay playsinline muted aria-label="Local camera preview"></video>
         <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
       </div>
 
       <div class="stream-toolbar">
         <div class="stream-actions">
-          <button id="capture-btn" data-action="capture">Capture</button>
-          <button id="record-btn" data-action="record">Record</button>
-          <button id="fullscreen-btn" data-action="fullscreen" class="secondary">Fullscreen</button>
+          <button id="start-camera-btn" data-action="start-camera">Start camera</button>
+          <button id="capture-btn" data-action="capture" disabled>Capture image</button>
+          <button id="record-btn" data-action="record" disabled>Start recording</button>
+          <button id="stop-camera-btn" data-action="stop-camera" class="secondary" disabled>Stop camera</button>
           <span id="record-timer" class="record-timer"></span>
         </div>
       </div>
 
       <div class="status-strip">
-        <div id="status" role="status" aria-live="polite">Idle.</div>
+        <div id="status" role="status" aria-live="polite">Press "Start camera" to begin.</div>
       </div>
     </section>
 
@@ -52,232 +41,35 @@
       <section class="panel info-panel">
         <div class="panel-header">
           <div>
-            <h2>Worker status</h2>
-          </div>
-        </div>
-        <div id="state" class="state-chips">
-          <div class="chip">Stream: <strong id="stateStreamMode" data-mode="idle">Idle</strong></div>
-          <div class="chip">Detection: <strong id="stateDet">-</strong></div>
-          <div class="chip">FPS: <strong id="stateFps">-</strong></div>
-        </div>
-        <div id="streamModeNote" class="small">WebRTC first, MJPEG fallback if needed.</div>
-        <details class="connection-details compact-details">
-          <summary>Worker details</summary>
-          <dl class="diag-grid">
-            <div>
-              <dt>Connection</dt>
-              <dd id="stateConnection">Proxy</dd>
-            </div>
-            <div>
-              <dt>Preset</dt>
-              <dd id="statePreset">-</dd>
-            </div>
-            <div>
-              <dt>Pose</dt>
-              <dd id="statePose">-</dd>
-            </div>
-            <div>
-              <dt>Inference</dt>
-              <dd id="stateInference">-</dd>
-            </div>
-            <div>
-              <dt>Codec</dt>
-              <dd id="stateCodec">-</dd>
-            </div>
-            <div>
-              <dt>Bitrate</dt>
-              <dd id="stateBitrate">-</dd>
-            </div>
-            <div>
-              <dt>Detect</dt>
-              <dd id="stateDetectMs">-</dd>
-            </div>
-            <div>
-              <dt>Pose</dt>
-              <dd id="statePoseMs">-</dd>
-            </div>
-          </dl>
-        </details>
-        <div class="control-grid">
-          {% if user.role == 'admin' %}
-          <div class="row">
-            <button id="btnPrev" data-action="cmd" data-cmd="n" data-busy="Switching to previous model..." class="secondary">Prev</button>
-            <button id="btnNext" data-action="cmd" data-cmd="m" data-busy="Switching to next model..." class="secondary">Next</button>
-            <button data-action="cmd" data-cmd="p" class="secondary">Pose</button>
-            <button data-action="cmd" data-cmd="o" class="secondary">Overlay</button>
-            <button data-action="cmd" data-cmd="i" class="secondary">Infer</button>
-            <button data-action="cmd" data-cmd="q" class="danger">Stop</button>
-          </div>
-          {% endif %}
-          <button id="btnConnect" data-action="connect" class="secondary">Reconnect</button>
-        </div>
-      </section>
-
-      <section class="panel info-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Connection</h2>
+            <h2>Capture settings</h2>
           </div>
         </div>
         <div class="connection-form">
           <div class="field compact-field">
-            <label for="connection-mode">Connection mode</label>
-            <select id="connection-mode">
-              <option value="proxy">Proxy</option>
-              <option value="direct">Direct worker URL</option>
+            <label for="capture-camera">Camera</label>
+            <select id="capture-camera">
+              <option value="">Default</option>
             </select>
           </div>
           <div class="field compact-field">
-            <label for="base">Worker base URL</label>
-            <input id="base" type="text" value="/" spellcheck="false" autocomplete="off" inputmode="url" />
+            <label for="capture-resolution">Resolution</label>
+            <select id="capture-resolution">
+              <option value="1280x720">1280 x 720 (720p)</option>
+              <option value="1920x1080">1920 x 1080 (1080p)</option>
+              <option value="640x480">640 x 480 (480p)</option>
+            </select>
           </div>
-          <div class="connection-actions">
-            <div class="small connection-target">
-              Target:
-              <strong id="resolvedTarget">/</strong>
-            </div>
-          </div>
-        </div>
-        <div id="connectionNote" class="small">Use proxy first. Switch to direct only if needed.</div>
-        <details class="connection-details compact-details">
-          <summary>Technical details</summary>
-          <div id="troubleSummary" class="small">
-            Proxy handles auth and CORS. Direct can help with local routing issues.
-          </div>
-          <div class="trouble-grid">
-            <div id="trouble-step-route" class="trouble-step" data-state="pending">
-              <strong>1. Route</strong>
-              <div id="trouble-routeDetail" class="small">Choose proxy or direct mode first.</div>
-            </div>
-            <div id="trouble-step-state" class="trouble-step" data-state="pending">
-              <strong>2. State API</strong>
-              <div id="trouble-stateDetail" class="small">The page checks whether `/api/state` is reachable.</div>
-            </div>
-            <div id="trouble-step-webrtc" class="trouble-step" data-state="pending">
-              <strong>3. WebRTC</strong>
-              <div id="trouble-webrtcDetail" class="small">The player tries WebRTC first for the live feed.</div>
-            </div>
-            <div id="trouble-step-video" class="trouble-step" data-state="pending">
-              <strong>4. Video path</strong>
-              <div id="trouble-videoDetail" class="small">If WebRTC fails, the page falls back to MJPEG when possible.</div>
-            </div>
-          </div>
-          <dl class="diag-grid">
-            <div>
-              <dt>Page origin</dt>
-              <dd id="techPageOrigin">-</dd>
-            </div>
-            <div>
-              <dt>Worker target</dt>
-              <dd id="techTarget">-</dd>
-            </div>
-            <div>
-              <dt>Backend hint</dt>
-              <dd id="techBackend">-</dd>
-            </div>
-            <div>
-              <dt>WebRTC</dt>
-              <dd id="techWebRtc">-</dd>
-            </div>
-            <div>
-              <dt>MJPEG</dt>
-              <dd id="techMjpeg">-</dd>
-            </div>
-            <div>
-              <dt>Last status</dt>
-              <dd id="techLastStatus">-</dd>
-            </div>
-            <div class="diag-span">
-              <dt>Last error</dt>
-              <dd id="techLastError">None</dd>
-            </div>
-          </dl>
-        </details>
-      </section>
-
-      {% if user.role == 'admin' %}
-      <section class="panel info-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Context</h2>
+          <div class="field compact-field">
+            <label for="capture-description">Description (optional)</label>
+            <input id="capture-description" type="text" maxlength="200" placeholder="Note for this capture" autocomplete="off" />
           </div>
         </div>
         <div class="state-chips">
-          <div class="chip">Analysis: <strong id="stateContextEnabled">-</strong></div>
-          <div class="chip">Trigger: <strong id="stateContextTrigger">-</strong></div>
-          <div class="chip">Profile: <strong id="stateContextProfile">-</strong></div>
+          <div class="chip">Backend: <strong>Browser MediaDevices</strong></div>
+          <div class="chip">Storage: <strong>MinIO</strong></div>
+          <div class="chip">Database: <strong>PostgreSQL</strong></div>
         </div>
-        <div id="contextSummary" class="small">No context yet.</div>
-        <div class="row">
-          <button data-action="context-analyze" class="secondary">Analyze now</button>
-          <button data-action="context-stop" class="danger">Stop analysis</button>
-          <button data-action="notification-toggle" class="secondary" id="notificationToggle">Alerts off</button>
-        </div>
-        <details class="connection-details compact-details">
-          <summary>Alert and analysis settings</summary>
-          <div class="connection-form">
-            <div class="field compact-field">
-              <label for="context-trigger">Trigger</label>
-              <select id="context-trigger">
-                <option value="interval">Every interval</option>
-                <option value="person_appears">Person appears</option>
-                <option value="person_present">Person present</option>
-                <option value="manual">Manual only</option>
-              </select>
-            </div>
-            <div class="field compact-field">
-              <label for="context-profile">Context profile</label>
-              <select id="context-profile">
-                <option value="auto">Auto</option>
-                <option value="low">Low CPU</option>
-                <option value="mid">Mid GPU</option>
-                <option value="high">High GPU</option>
-                <option value="max">Max GPU</option>
-              </select>
-            </div>
-            <div class="field compact-field">
-              <label for="context-model">Ollama model</label>
-              <select id="context-model">
-                <option value="auto">Auto</option>
-              </select>
-            </div>
-            <div class="field compact-field">
-              <label for="context-cooldown">Trigger cooldown seconds</label>
-              <input id="context-cooldown" type="number" min="1" max="3600" step="1" value="30" />
-            </div>
-            <div class="field compact-field">
-              <label for="notification-cooldown">Alert cooldown seconds</label>
-              <input id="notification-cooldown" type="number" min="5" max="3600" step="1" value="60" />
-            </div>
-            <div class="field compact-field">
-              <label for="pre-event-enabled">Pre-event clip</label>
-              <select id="pre-event-enabled">
-                <option value="0">Off</option>
-                <option value="1">On</option>
-              </select>
-            </div>
-            <div class="field compact-field">
-              <label for="pre-event-seconds">Pre-event seconds</label>
-              <input id="pre-event-seconds" type="number" min="5" max="120" step="5" value="30" />
-            </div>
-            <div class="field compact-field">
-              <label for="capture-descriptions">Describe captures</label>
-              <select id="capture-descriptions">
-                <option value="0">Off</option>
-                <option value="1">On</option>
-              </select>
-            </div>
-          </div>
-          <dl class="diag-grid">
-            <div>
-              <dt>Model</dt>
-              <dd id="stateContextModel">-</dd>
-            </div>
-          </dl>
-          <button data-action="context-save" class="secondary">Apply settings</button>
-        </details>
       </section>
-      {% endif %}
 
       <section class="panel">
         <div class="panel-header">
@@ -291,5 +83,6 @@
     </aside>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/stream.js?v=20260509a"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/capture.js?v=20260519a"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
 {% endblock %}

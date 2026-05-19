@@ -1,4 +1,4 @@
-/* admin.js - Admin dashboard: users, sessions, worker status, and passkeys */
+/* admin.js - Admin dashboard: users, sessions, ops status, and passkeys */
 
 function getCsrf() {
   return document.cookie.match(/csrf_token=([^;]+)/)?.[1] || "";
@@ -33,14 +33,8 @@ const passwordResetSubmit = document.getElementById("password-reset-submit");
 let passwordResetTarget = null;
 let passwordResetCloseTimer = null;
 
-const WORKER_POLL_BASE_MS = 2000;
-const WORKER_POLL_MAX_MS = 15000;
 const OPS_POLL_BASE_MS = 10000;
 const OPS_POLL_MAX_MS = 30000;
-let workerStatusTimer = null;
-let workerStatusFailureCount = 0;
-let workerStatusInFlight = false;
-let workerStatusWasOffline = false;
 let opsStatusTimer = null;
 let opsStatusFailureCount = 0;
 let opsStatusInFlight = false;
@@ -96,25 +90,6 @@ function openPasswordResetModal(userId, username) {
   });
 }
 
-function formatRetryDelay(ms) {
-  if (ms < 1000) return ms + " ms";
-  const seconds = Math.round(ms / 1000);
-  return seconds + (seconds === 1 ? " second" : " seconds");
-}
-
-function nextWorkerPollDelay() {
-  if (workerStatusFailureCount <= 0) return WORKER_POLL_BASE_MS;
-  const scaled = WORKER_POLL_BASE_MS * Math.pow(2, workerStatusFailureCount - 1);
-  return Math.min(scaled, WORKER_POLL_MAX_MS);
-}
-
-function scheduleWorkerStatusPoll(delayMs = null, options = {}) {
-  window.clearTimeout(workerStatusTimer);
-  workerStatusTimer = window.setTimeout(() => {
-    loadWorkerStatus({ silent: options.silent !== false }).catch(() => {});
-  }, delayMs == null ? nextWorkerPollDelay() : delayMs);
-}
-
 function nextOpsPollDelay() {
   if (opsStatusFailureCount <= 0) return OPS_POLL_BASE_MS;
   const scaled = OPS_POLL_BASE_MS * Math.pow(2, opsStatusFailureCount - 1);
@@ -142,11 +117,10 @@ async function loadOpsStatus(options = {}) {
     const data = await resp.json();
     opsStatusFailureCount = 0;
     const thumbnail = data.thumbnail || {};
-    const worker = data.worker || {};
+    const storage = data.storage || {};
+    const database = data.database || {};
     const queueSummary = `${thumbnail.pending_count || 0} pending | ${thumbnail.inflight_count || 0} inflight | ${thumbnail.active_tasks || 0} active tasks`;
     const resultSummary = `${thumbnail.completed_count || 0} completed | ${thumbnail.failed_count || 0} failed`;
-    const lastWorkerOk = worker.last_ok_at ? formatDate(worker.last_ok_at) : "Never";
-    const lastWorkerError = worker.last_error_at ? formatDate(worker.last_error_at) : "None";
     el.innerHTML = `
       <div class="stack-note-card">
         <strong>Thumbnail queue</strong>
@@ -160,15 +134,18 @@ async function loadOpsStatus(options = {}) {
         <div class="small">Last recording: ${thumbnail.last_recording_id || "-"}</div>
       </div>
       <div class="stack-note-card">
-        <strong>Worker reachability</strong>
-        <div class="small">Last reachable: ${lastWorkerOk}</div>
-        <div class="small">Last attempt path: ${escHtml(worker.last_path || "-")}</div>
-        <div class="small">Last status: ${worker.last_status_code != null ? worker.last_status_code : "-"}</div>
+        <strong>Object storage</strong>
+        <div class="small">Endpoint: ${escHtml(storage.endpoint || "-")}</div>
+        <div class="small">Bucket: ${escHtml(storage.bucket || "-")}</div>
+      </div>
+      <div class="stack-note-card">
+        <strong>Database</strong>
+        <div class="small">Host: ${escHtml(database.host || "-")}:${database.port || "-"}</div>
+        <div class="small">Database: ${escHtml(database.db || "-")}</div>
       </div>
       <div class="stack-note-card">
         <strong>Latest issues</strong>
-        <div class="small">Worker error at: ${lastWorkerError}</div>
-        <div class="small">${escHtml(worker.last_error || thumbnail.last_error || "No recent errors.")}</div>
+        <div class="small">${escHtml(thumbnail.last_error || "No recent errors.")}</div>
       </div>`;
     scheduleOpsStatusPoll(OPS_POLL_BASE_MS);
   } catch (err) {
@@ -225,71 +202,6 @@ async function submitPasswordReset(event) {
     if (passwordResetSubmit) {
       passwordResetSubmit.disabled = false;
     }
-  }
-}
-
-async function loadWorkerStatus(options = {}) {
-  if (workerStatusInFlight && !options.force) return;
-  workerStatusInFlight = true;
-  const el = document.getElementById("worker-status");
-  try {
-    const resp = await fetch("/api/state", { cache: "no-store" });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    const data = await resp.json();
-    const wasOffline = workerStatusWasOffline;
-    workerStatusFailureCount = 0;
-    workerStatusWasOffline = false;
-    const lastError = data.last_error ? escHtml(data.last_error) : "-";
-    const lastCommand = data.cmd_last ? escHtml(data.cmd_last) : "-";
-    el.innerHTML = `
-      <div class="table-wrap">
-        <table class="admin-table">
-          <tr><th>Preset</th><td>${escHtml(data.preset || "-")}</td></tr>
-          <tr><th>Detection</th><td>${escHtml(data.det || "-")}</td></tr>
-          <tr><th>FPS</th><td>${data.fps != null ? Number(data.fps).toFixed(1) : "-"}</td></tr>
-          <tr><th>Pose</th><td>${data.pose_enabled ? "on" : "off"}</td></tr>
-          <tr><th>Inference</th><td>${data.inference_enabled ? "on" : "off"}</td></tr>
-          <tr><th>Last command</th><td>${lastCommand}</td></tr>
-          <tr><th>Worker error</th><td>${lastError}</td></tr>
-      <tr><th>Stream backend</th><td>${escHtml(data.stream_backend || "-")}</td></tr>
-      <tr><th>WebRTC available</th><td>${data.webrtc_available ? "yes" : "no"}</td></tr>
-        </table>
-      </div>`;
-    if (wasOffline) {
-      toast("Worker is back online.", { tone: "success", title: "Worker online" });
-    }
-    scheduleWorkerStatusPoll(WORKER_POLL_BASE_MS, { silent: true });
-  } catch (err) {
-    workerStatusFailureCount += 1;
-    const workerStatusDelayMs = nextWorkerPollDelay();
-    const retryLabel = formatRetryDelay(workerStatusDelayMs);
-    el.innerHTML = '<span class="small error">Worker unreachable: ' + err.message + '. Retrying in ' + retryLabel + '.</span>';
-    if (!workerStatusWasOffline) {
-      workerStatusWasOffline = true;
-      toast("Worker unreachable. Retrying in the background.", { tone: "warn", title: "Worker offline" });
-    }
-    scheduleWorkerStatusPoll(workerStatusDelayMs, { silent: true });
-  } finally {
-    workerStatusInFlight = false;
-  }
-}
-
-async function adminCmd(cmd) {
-  try {
-    const resp = await fetch("/api/cmd", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
-      body: JSON.stringify({ cmd })
-    });
-    const payload = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      throw new Error(payload.error || payload.detail || ("HTTP " + resp.status));
-    }
-    toast("Command sent: " + cmd, { tone: "success", title: "Worker command" });
-    loadWorkerStatus({ force: true, silent: true }).catch(() => {});
-    loadOpsStatus({ force: true, silent: true }).catch(() => {});
-  } catch (err) {
-    toast("Command failed: " + err.message, { tone: "error", title: "Worker command" });
   }
 }
 
@@ -474,178 +386,41 @@ function loadSystemInfo() {
   const appOrigin = window.location.origin || "http://localhost:3000";
   el.innerHTML = `
     <div class="stack-note-card">
-      <strong>Proxy origin</strong>
+      <strong>App origin</strong>
       <div class="admin-actions" style="margin-top:8px;">
         <code>${escHtml(appOrigin)}</code>
         <button type="button" class="ghost copy-button admin-inline-button" data-copy-text="${escHtml(appOrigin)}">Copy</button>
       </div>
     </div>
     <div class="stack-note-card">
-      <strong>PowerShell worker</strong>
-      <div class="admin-actions" style="margin-top:8px;">
-        <code>powershell -ExecutionPolicy Bypass -File .runtime\\live\\start-worker-powershell.ps1</code>
-        <button type="button" class="ghost copy-button admin-inline-button" data-copy-text="powershell -ExecutionPolicy Bypass -File .runtime\\live\\start-worker-powershell.ps1">Copy</button>
-      </div>
+      <strong>VPN</strong>
+      <div class="small">Reach the stack remotely through the WireGuard server bundled with the stack. The wg-easy admin UI is served at <code>/vpn/</code> on this host.</div>
+    </div>
+    <div class="stack-note-card">
+      <strong>Object storage console</strong>
+      <div class="small">MinIO admin UI is served at <code>/minio/</code> on this host (admin role only). Recordings are stored in the <code>recordings</code> bucket.</div>
     </div>`;
   if (typeof initCopyButtons === "function") initCopyButtons();
-}
-
-async function loadPasskeys() {
-  const el = document.getElementById("passkeys-list");
-  if (!el) return;
-  try {
-    const resp = await fetch("/auth/webauthn/credentials", { cache: "no-store" });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    const keys = await resp.json();
-
-    if (!keys.length) {
-      el.innerHTML = '<p class="small">No passkeys registered yet.</p>';
-      return;
-    }
-
-    let html = '<div class="table-wrap"><table class="admin-table"><thead><tr><th>Name</th><th>Sign count</th><th>Registered</th><th>Action</th></tr></thead><tbody>';
-    for (const key of keys) {
-      html += `<tr>
-        <td>${escHtml(key.name)}</td>
-        <td>${key.sign_count}</td>
-        <td>${formatDate(key.created_at)}</td>
-        <td><button data-action="delete-passkey" data-cred-id="${key.id}" data-name="${escHtml(key.name)}" class="danger admin-inline-button">Delete</button></td>
-      </tr>`;
-    }
-    html += "</tbody></table></div>";
-    el.innerHTML = html;
-  } catch (err) {
-    el.innerHTML = '<span class="small error">Failed: ' + err.message + "</span>";
-  }
-}
-
-function base64urlToBuffer(b64url) {
-  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
-  const bin = atob(b64 + pad);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return arr.buffer;
-}
-
-function bufferToBase64url(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let str = "";
-  for (const b of bytes) str += String.fromCharCode(b);
-  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function registerPasskey() {
-  const btn = document.getElementById("register-passkey-btn");
-  if (btn) btn.disabled = true;
-  try {
-    const name = await promptDialog({
-      title: "Name passkey",
-      message: "Choose a friendly name for this passkey before registration starts.",
-      inputLabel: "Passkey name",
-      placeholder: "My Passkey",
-      value: "My Passkey",
-      confirmLabel: "Continue",
-      cancelLabel: "Cancel"
-    });
-    if (name === null) return;
-
-    const beginResp = await fetch("/auth/webauthn/register/begin", {
-      method: "POST",
-      headers: { "X-CSRF-Token": getCsrf() }
-    });
-    if (!beginResp.ok) throw new Error("Failed to start registration");
-    const options = await beginResp.json();
-
-    options.challenge = base64urlToBuffer(options.challenge);
-    options.user.id = base64urlToBuffer(options.user.id);
-    if (options.excludeCredentials) {
-      options.excludeCredentials = options.excludeCredentials.map(credential => ({
-        ...credential,
-        id: base64urlToBuffer(credential.id)
-      }));
-    }
-
-    const credential = await navigator.credentials.create({ publicKey: options });
-    const attestation = {
-      id: credential.id,
-      rawId: bufferToBase64url(credential.rawId),
-      type: credential.type,
-      response: {
-        attestationObject: bufferToBase64url(credential.response.attestationObject),
-        clientDataJSON: bufferToBase64url(credential.response.clientDataJSON)
-      }
-    };
-    attestation.name = name;
-
-    const completeResp = await fetch("/auth/webauthn/register/complete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
-      body: JSON.stringify(attestation)
-    });
-    if (!completeResp.ok) {
-      const err = await completeResp.json().catch(() => ({}));
-      throw new Error(err.detail || "Registration failed");
-    }
-
-    toast(`Passkey "${name}" registered.`, { tone: "success", title: "Passkey added" });
-    await loadPasskeys();
-  } catch (err) {
-    if (err.name !== "AbortError") {
-      toast("Passkey registration failed: " + err.message, { tone: "error", title: "Passkey failed" });
-    }
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function deletePasskey(credId, name) {
-  const confirmed = await confirmDialog({
-    title: "Delete passkey",
-    message: `Delete passkey "${name}"? This cannot be undone.`,
-    confirmLabel: "Delete passkey",
-    cancelLabel: "Keep passkey",
-    confirmTone: "danger",
-    tone: "danger"
-  });
-  if (!confirmed) return;
-  try {
-    const resp = await fetch("/auth/webauthn/credentials/" + credId, {
-      method: "DELETE",
-      headers: { "X-CSRF-Token": getCsrf() }
-    });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    toast(`Passkey "${name}" deleted.`, { tone: "success", title: "Passkey removed" });
-    await loadPasskeys();
-  } catch (err) {
-    toast("Delete failed: " + err.message, { tone: "error", title: "Passkey delete failed" });
-  }
 }
 
 loadUsers();
 loadSessions();
 loadSystemInfo();
-loadPasskeys();
 loadOpsStatus({ force: true }).catch(() => {});
 
 document.addEventListener("click", event => {
   const btn = event.target.closest("[data-action]");
   if (!btn) return;
   const action = btn.dataset.action;
-  if (action === "admin-cmd") adminCmd(btn.dataset.cmd);
-  else if (action === "save-role") saveRole(parseInt(btn.dataset.userId, 10));
+  if (action === "save-role") saveRole(parseInt(btn.dataset.userId, 10));
   else if (action === "reset-pw") resetPassword(parseInt(btn.dataset.userId, 10), btn.dataset.username);
   else if (action === "cancel-password-reset") closePasswordResetModal();
   else if (action === "delete-user") deleteUser(parseInt(btn.dataset.userId, 10), btn.dataset.username);
   else if (action === "revoke-session") revokeSession(btn.dataset.sessionId);
-  else if (action === "delete-passkey") deletePasskey(parseInt(btn.dataset.credId, 10), btn.dataset.name);
 });
 
 document.getElementById("create-user-form").addEventListener("submit", createUser);
 if (passwordResetForm) passwordResetForm.addEventListener("submit", submitPasswordReset);
-
-const registerBtn = document.getElementById("register-passkey-btn");
-if (registerBtn) registerBtn.addEventListener("click", registerPasskey);
 
 if (passwordResetModal) {
   passwordResetModal.addEventListener("click", event => {
@@ -660,5 +435,3 @@ document.addEventListener("keydown", event => {
     closePasswordResetModal();
   }
 });
-
-loadWorkerStatus({ silent: true });

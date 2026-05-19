@@ -4,37 +4,32 @@ import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.database import init_db
+from app.database import close_pool, init_db
+from app.storage import ensure_bucket
 from app.thumbnail_jobs import shutdown_thumbnail_jobs
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    app.state.worker_http_client = httpx.AsyncClient(
-        follow_redirects=False,
-        timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0),
-        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
-    )
+    await ensure_bucket()
     try:
         yield
     finally:
         await shutdown_thumbnail_jobs()
-        await app.state.worker_http_client.aclose()
+        await close_pool()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 
 templates = Jinja2Templates(directory="templates")
 
-# Mount static files
 static_path = Path(__file__).parent.parent / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
@@ -49,17 +44,15 @@ async def security_headers_middleware(request: Request, call_next):
     forwarded_proto = (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower()
     is_secure = request.url.scheme == "https" or forwarded_proto == "https"
 
-    # Security headers
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
     response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
     if is_secure:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
-    # Don't add CSP to streaming responses or static files
     path = request.url.path
     if path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "public, max-age=3600")
@@ -109,22 +102,19 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
-# Include routers
 from app.auth.routes import router as auth_router
-from app.proxy.routes import router as proxy_router
 from app.dashboard.routes import router as dashboard_router
 from app.gallery.routes import router as gallery_router
 from app.recording.routes import router as recording_router
 
 app.include_router(auth_router)
-app.include_router(proxy_router)
 app.include_router(dashboard_router)
 app.include_router(gallery_router)
 app.include_router(recording_router)
 
 
 @app.get("/", response_class=HTMLResponse)
-async def stream_page(request: Request):
+async def capture_page(request: Request):
     from app.auth.dependencies import _get_session_user
     user = await _get_session_user(request)
     if not user:

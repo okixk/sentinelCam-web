@@ -4,15 +4,24 @@ import json
 import logging
 import time
 import uuid
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.auth.dependencies import User, check_csrf, get_current_user
 from app.config import settings
 from app.database import get_db
+from app.storage import (
+    delete_many,
+    object_response_headers,
+    recording_key,
+    s3_client,
+    stream_object,
+    thumbnail_key,
+    upload_stream,
+)
 from app.thumbnail_jobs import ensure_thumbnail_from_row, schedule_thumbnail_warmup
 
 log = logging.getLogger("sentinelCam.recording")
@@ -35,6 +44,14 @@ EXTENSION_MAP = {
     "video/mp4": "mp4",
 }
 
+MEDIA_TYPE_MAP = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webm": "video/webm",
+    "mp4": "video/mp4",
+}
+
 
 def _check_magic_bytes(data: bytes, mime: str) -> bool:
     if mime == "image/jpeg":
@@ -48,36 +65,14 @@ def _check_magic_bytes(data: bytes, mime: str) -> bool:
     return False
 
 
-def _get_recordings_dir(user_id: int) -> Path:
-    p = Path(settings.recordings_path) / str(user_id)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-async def _save_upload_file(upload: UploadFile, destination: Path, max_bytes: int, sniff_bytes: int = 32) -> tuple[int, bytes]:
-    total = 0
-    head = bytearray()
-
-    try:
-        with destination.open("wb") as f:
-            while True:
-                chunk = await upload.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise HTTPException(413, f"File too large (max {settings.max_upload_size_mb} MB)")
-                if len(head) < sniff_bytes:
-                    need = sniff_bytes - len(head)
-                    head.extend(chunk[:need])
-                f.write(chunk)
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
-    finally:
-        await upload.close()
-
-    return total, bytes(head)
+def _safe_filename_for_key(filename: str | None) -> str | None:
+    """Reject path-traversal attempts before composing a storage key."""
+    if not filename:
+        return None
+    s = str(filename)
+    if "/" in s or "\\" in s or ".." in s:
+        return None
+    return s
 
 
 @router.post("/upload")
@@ -96,26 +91,24 @@ async def upload_recording(
 
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
 
-    # Reject content types we don't accept instead of silently coercing — a
-    # mismatched content-type is almost always a misconfigured client or an
-    # attacker probing the upload path.
     allowed_overlay = ALLOWED_MIME_IMAGE if type == "image" else ALLOWED_MIME_VIDEO
     overlay_mime = (overlay_file.content_type or "").lower()
     if overlay_mime not in allowed_overlay:
         raise HTTPException(415, f"Unsupported overlay content type for {type}")
 
-    rec_dir = _get_recordings_dir(user.id)
     file_uuid = str(uuid.uuid4()).replace("-", "")
     ext = EXTENSION_MAP.get(overlay_mime, "bin")
     overlay_filename = f"{file_uuid}.{ext}"
-    overlay_path = rec_dir / overlay_filename
+    overlay_obj_key = recording_key(user.id, overlay_filename)
 
-    overlay_size, overlay_head = await _save_upload_file(overlay_file, overlay_path, max_bytes)
+    overlay_size, overlay_head = await upload_stream(
+        overlay_file, overlay_obj_key, max_bytes, content_type=overlay_mime
+    )
     if not _check_magic_bytes(overlay_head, overlay_mime):
-        overlay_path.unlink(missing_ok=True)
+        await delete_many([overlay_obj_key])
         raise HTTPException(400, "File content does not match expected type")
 
-    raw_filename = None
+    raw_filename: str | None = None
     raw_size = 0
     if raw_file is not None and getattr(raw_file, "filename", ""):
         raw_mime = (raw_file.content_type or "").lower()
@@ -123,12 +116,14 @@ async def upload_recording(
             raw_uuid = str(uuid.uuid4()).replace("-", "")
             raw_ext = EXTENSION_MAP.get(raw_mime, "jpg" if type == "image" else "webm")
             candidate_raw_filename = f"{raw_uuid}_raw.{raw_ext}"
-            candidate_raw_path = rec_dir / candidate_raw_filename
-            raw_size, raw_head = await _save_upload_file(raw_file, candidate_raw_path, max_bytes)
+            candidate_raw_key = recording_key(user.id, candidate_raw_filename)
+            raw_size, raw_head = await upload_stream(
+                raw_file, candidate_raw_key, max_bytes, content_type=raw_mime
+            )
             if _check_magic_bytes(raw_head, raw_mime):
                 raw_filename = candidate_raw_filename
             else:
-                candidate_raw_path.unlink(missing_ok=True)
+                await delete_many([candidate_raw_key])
                 raw_size = 0
 
     quota_bytes = settings.storage_quota_per_user_mb * 1024 * 1024
@@ -138,7 +133,6 @@ async def upload_recording(
     metadata = json.dumps({"description": clean_description}) if clean_description else None
 
     async with get_db() as conn:
-        # Quota check inside the same transaction to prevent race conditions
         cursor = await conn.execute(
             "SELECT COALESCE(SUM(size_bytes), 0) FROM recordings WHERE user_id = ?",
             (user.id,),
@@ -146,12 +140,14 @@ async def upload_recording(
         row = await cursor.fetchone()
         used = row[0] if row else 0
         if used + add_bytes > quota_bytes:
-            # Clean up already-written files before raising
-            overlay_path.unlink(missing_ok=True)
-            if raw_filename:
-                raw_path = rec_dir / raw_filename
-                raw_path.unlink(missing_ok=True)
-            raise HTTPException(413, f"Storage quota exceeded ({settings.storage_quota_per_user_mb} MB limit)")
+            await delete_many(
+                [overlay_obj_key]
+                + ([recording_key(user.id, raw_filename)] if raw_filename else [])
+            )
+            raise HTTPException(
+                413,
+                f"Storage quota exceeded ({settings.storage_quota_per_user_mb} MB limit)",
+            )
 
         cursor = await conn.execute(
             "INSERT INTO recordings (user_id, type, filename, overlay_filename, raw_filename, size_bytes, duration_seconds, metadata) "
@@ -168,7 +164,6 @@ async def upload_recording(
             ),
         )
         new_row = await cursor.fetchone()
-        await conn.commit()
 
     _audit("recording.upload", username=user.username, type=type, id=new_row["id"])
     schedule_thumbnail_warmup([new_row["id"]])
@@ -193,7 +188,7 @@ async def list_recordings(
     order = "DESC" if sort != "oldest" else "ASC"
     q = (q or "").strip()[:80]
 
-    conditions = []
+    conditions: list[str] = []
     params: list = []
 
     if user.role != "admin":
@@ -287,24 +282,34 @@ async def serve_recording_file(
     else:
         fname = row["overlay_filename"] or row["filename"]
 
-    rec_dir = (Path(settings.recordings_path) / str(row["user_id"])).resolve()
-    try:
-        path = (rec_dir / fname).resolve(strict=False)
-        path.relative_to(rec_dir)
-    except (ValueError, OSError):
+    safe_name = _safe_filename_for_key(fname)
+    if not safe_name:
         raise HTTPException(404, "Recording not found")
-    if not path.exists() or not path.is_file():
+
+    ext = PurePosixPath(safe_name).suffix.lstrip(".").lower()
+    media_type = MEDIA_TYPE_MAP.get(ext, "application/octet-stream")
+    key = recording_key(int(row["user_id"]), safe_name)
+
+    async with s3_client() as client:
+        try:
+            head = await client.head_object(Bucket=settings.s3_bucket, Key=key)
+        except Exception:
+            head = None
+
+    headers = object_response_headers(head or {})
+    headers.setdefault("Cache-Control", "private, max-age=300")
+
+    async def iter_chunks():
+        try:
+            async for chunk in stream_object(key):
+                yield chunk
+        except FileNotFoundError:
+            return
+
+    if head is None:
         raise HTTPException(404, "File not found on disk")
 
-    ext = path.suffix.lower()
-    media_types = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webm": "video/webm",
-        ".mp4": "video/mp4",
-    }
-    media_type = media_types.get(ext, "application/octet-stream")
-    return FileResponse(str(path), media_type=media_type)
+    return StreamingResponse(iter_chunks(), media_type=media_type, headers=headers)
 
 
 @router.get("/{recording_id}/thumbnail")
@@ -321,14 +326,21 @@ async def serve_thumbnail(recording_id: int, user: User = Depends(get_current_us
         raise HTTPException(404, "Recording not found")
 
     try:
-        thumb_path = await ensure_thumbnail_from_row(row)
+        key = await ensure_thumbnail_from_row(row)
     except FileNotFoundError:
         raise HTTPException(404, "File not found")
     except Exception as e:
         raise HTTPException(500, f"Thumbnail generation failed: {e}")
 
-    return FileResponse(
-        str(thumb_path),
+    async def iter_chunks():
+        try:
+            async for chunk in stream_object(key):
+                yield chunk
+        except FileNotFoundError:
+            return
+
+    return StreamingResponse(
+        iter_chunks(),
         media_type="image/jpeg",
         headers={"Cache-Control": "private, max-age=86400"},
     )
@@ -354,30 +366,21 @@ async def delete_recording(
             raise HTTPException(403, "Cannot delete other users' recordings")
 
         await conn.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
-        await conn.commit()
 
-    rec_dir = (Path(settings.recordings_path) / str(row["user_id"])).resolve()
-    seen: set[Path] = set()
+    keys_to_delete: list[str] = []
+    seen: set[str] = set()
     for fname in (row["filename"], row["overlay_filename"], row["raw_filename"]):
-        if not fname:
+        safe = _safe_filename_for_key(fname)
+        if not safe or safe in seen:
             continue
-        try:
-            p = (rec_dir / fname).resolve(strict=False)
-            p.relative_to(rec_dir)
-        except (ValueError, OSError):
-            continue
-        if p in seen:
-            continue
-        seen.add(p)
-        if p.exists() and p.is_file():
-            p.unlink(missing_ok=True)
-        thumb = (rec_dir / f"thumb_{Path(fname).stem}.jpg").resolve(strict=False)
-        try:
-            thumb.relative_to(rec_dir)
-        except (ValueError, OSError):
-            continue
-        if thumb.exists() and thumb.is_file():
-            thumb.unlink(missing_ok=True)
+        seen.add(safe)
+        keys_to_delete.append(recording_key(int(row["user_id"]), safe))
+        stem = PurePosixPath(safe).stem
+        if stem:
+            keys_to_delete.append(thumbnail_key(int(row["user_id"]), stem))
+
+    if keys_to_delete:
+        await delete_many(keys_to_delete)
 
     _audit("recording.delete", username=user.username, id=recording_id)
     return JSONResponse({"ok": True})
@@ -404,6 +407,5 @@ async def toggle_share(
         await conn.execute(
             "UPDATE recordings SET shared = ? WHERE id = ?", (shared, recording_id)
         )
-        await conn.commit()
     _audit("recording.share", username=user.username, id=recording_id, shared=shared)
     return JSONResponse({"ok": True, "shared": shared})

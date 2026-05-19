@@ -13,7 +13,6 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import User, check_csrf, require_admin
 from app.config import settings
 from app.database import get_db
-from app.proxy.routes import get_worker_proxy_status
 from app.security import hash_password
 from app.thumbnail_jobs import get_thumbnail_job_stats
 
@@ -208,6 +207,14 @@ async def admin_ops(admin: User = Depends(require_admin)):
     return JSONResponse(
         {
             "thumbnail": get_thumbnail_job_stats(),
-            "worker": get_worker_proxy_status(),
+            "storage": {
+                "bucket": settings.s3_bucket,
+                "endpoint": settings.s3_endpoint_url,
+            },
+            "database": {
+                "host": settings.postgres_host,
+                "port": settings.postgres_port,
+                "db": settings.postgres_db,
+            },
         }
     )

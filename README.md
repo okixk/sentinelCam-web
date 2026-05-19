@@ -1,431 +1,142 @@
 # sentinelCam Web
 
-`sentinelCam-web` is the browser UI for the sentinelCam stack.
+Browser-first camera capture and gallery service. Runs as a single Docker
+Compose stack with five services: the FastAPI app, a Caddy reverse proxy, a
+PostgreSQL database, MinIO object storage, and a wg-easy WireGuard server for
+remote access.
 
-It connects to a running `sentinelCam-worker`, shows the live stream, proxies worker APIs, stores captures and recordings, and provides user/admin workflows with password and passkey authentication.
+## What you get
 
-## What This Repo Does
-
-- FastAPI web app with session auth and WebAuthn/passkeys
-- Same-origin proxy for worker state, commands, MJPEG, and WebRTC signaling
-- SQLite-backed users, sessions, and recording metadata
-- Jinja-rendered UI for stream, gallery, detail, and admin pages
-- Docker packaging for the web app
+- FastAPI app with password and passkey (WebAuthn) auth
+- In-browser camera capture (image + video) via `MediaDevices` + `MediaRecorder`
+- Recordings + thumbnails stored in MinIO (S3-compatible)
+- Users, sessions, passkeys, and recording metadata in PostgreSQL
+- Caddy in front, terminating TLS (local CA by default, Let's Encrypt when you
+  set `SC_PUBLIC_HOSTNAME` + `SC_TLS_EMAIL`)
+- WireGuard VPN (wg-easy) for reaching the admin consoles and the LAN from
+  outside
 
 ## Architecture
 
 ```text
-camera/source -> sentinelCam-worker (port 8080) -> sentinelCam-web (port 3000) -> browser
+browser
+  │  HTTPS (or via VPN)
+  ▼
+caddy ─── http://web:3000 ───► fastapi (this repo)
+                                 │           │
+                                 │           ├─► postgres:5432  (auth, sessions, recordings)
+                                 │           └─► minio:9000     (object storage: recordings, thumbnails)
+wg-easy ── UDP 51820/udp ─────► host network (VPN tunnel for remote clients)
 ```
 
-The recommended setup depends on the platform:
+Only Caddy and wg-easy publish ports to the host. PostgreSQL and MinIO are
+reachable only on the internal `sentinelcam` Docker network (or via VPN).
 
-| Platform | Recommended web start | Recommended worker start |
-|---|---|---|
-| Windows | Docker Desktop | local PowerShell / `run.bat` |
-| Linux | Docker Engine | local `run.sh` or full Docker stack |
-| macOS | Docker Desktop | local Terminal / `run.sh` |
+## Quick start
 
-Important:
+1. Generate a bcrypt hash for the wg-easy admin password:
 
-- On Windows and macOS, run only the `web` service in Docker for normal webcam use.
-- On Linux, you can run both `web` and `worker` in Docker if the camera is available as `/dev/video*`.
-- The web app defaults to proxy mode, so the worker token stays server-side.
+   ```bash
+   docker run --rm ghcr.io/wg-easy/wg-easy:14 wgpw 'your-vpn-admin-password'
+   ```
 
-## Repository Layout
+2. Copy `.env.example` to `.env` and fill in:
+   - `ADMIN_USER` / `ADMIN_PASSWORD` — first-boot admin
+   - `POSTGRES_PASSWORD` — database password
+   - `S3_ACCESS_KEY` / `S3_SECRET_KEY` — MinIO root credentials (the web
+     container uses them as its S3 credentials too)
+   - `WG_HOST` — the hostname or IP your VPN clients dial
+   - `WG_PASSWORD_HASH` — the bcrypt hash from step 1 (keep the single quotes)
+   - `WEBAUTHN_RP_ID` — `localhost` for local dev, your DNS name otherwise
 
-The docs below assume both repositories sit next to each other:
+3. Bring the stack up:
 
-```text
-sentinelCam-web/
-sentinelCam-worker/
-```
+   ```bash
+   docker compose up -d --build
+   ```
 
-If your worker repo lives somewhere else, set `SENTINELCAM_WORKER_DIR` before using the helper scripts in this repo.
+4. Open the web app on the host:
 
-## 1. Common Setup
+   - `https://localhost/` (Caddy will use its local CA; browsers warn the
+     first time — accept the cert or trust Caddy's local root)
+   - If you set `SC_PUBLIC_HOSTNAME`, open `https://<your-hostname>/`
 
-### Prerequisites
+5. Sign in with `ADMIN_USER` / `ADMIN_PASSWORD`. Press **Start camera** on the
+   capture page, then **Capture image** or **Start recording**. Files land in
+   the `recordings` bucket and show up in the gallery.
 
-Windows:
+## Admin consoles
 
-- Docker Desktop
-- Python 3 with `py` launcher for the local worker
-- PowerShell
+The MinIO console and the wg-easy admin UI are bound to `127.0.0.1` so they
+are reachable from the host but not the public internet:
 
-Linux:
+- MinIO console: <http://127.0.0.1:9001> — log in with `S3_ACCESS_KEY` /
+  `S3_SECRET_KEY`
+- wg-easy admin: <http://127.0.0.1:51821> — log in with the password whose
+  bcrypt hash you set in `WG_PASSWORD_HASH`
 
-- Docker Engine with Compose
-- Bash
-- Python 3.12, 3.13, or 3.14 with `venv`
+When you SSH to the host you can forward those ports or reach them over the
+VPN. Do **not** publish them to the public internet without an additional
+auth layer in front.
 
-macOS:
+## VPN access
 
-- Docker Desktop
-- Bash or zsh
-- Python 3.12, 3.13, or 3.14 with `venv`
+The wg-easy server publishes UDP port `51820`. Create a client in the wg-easy
+UI, scan or download the WireGuard config, import it into your WireGuard
+client, and connect. Connected peers can reach `postgres`, `minio`, and the
+web service by their service names on the internal network.
 
-### Create `.env`
+## TLS
 
-Copy `.env.example` to `.env` and set at least:
+- Default: Caddy issues a self-signed cert from its built-in local CA. The
+  trust root lives at `/data/caddy/pki/authorities/local/root.crt` inside the
+  `caddy` container — import it into your devices to silence cert warnings.
+- Production: set `SC_PUBLIC_HOSTNAME` to a real DNS name pointing at the
+  host, plus `SC_TLS_EMAIL`. Caddy will provision a Let's Encrypt cert
+  automatically on first request.
 
-```dotenv
-WORKER_TOKEN=replace-with-a-long-random-token
-ADMIN_USER=admin
-ADMIN_PASSWORD=replace-with-a-strong-password
-WEBAUTHN_RP_ID=localhost
-```
+## Running tests
 
-Optional but useful for first launch:
-
-```dotenv
-WORKER_SOURCE=synthetic
-```
-
-That starts the worker with generated test frames, so you can verify the stack even without a real camera.
-
-Notes:
-
-- `WORKER_TOKEN` must match the worker's `WEB_AUTH_TOKEN`.
-- `ADMIN_PASSWORD` is only used on first startup when the web database is empty.
-- `WEBAUTHN_RP_ID=localhost` is correct for local development.
-
-## 2. Start On Windows
-
-Recommended path:
-
-- web in Docker
-- worker locally in PowerShell
-
-### Fastest Windows Start
-
-From `sentinelCam-web`:
-
-```powershell
-Copy-Item .env.example .env
-notepad .env
-.\scripts\start-local-worker.ps1
-```
-
-What this does:
-
-- starts the `web` container with `docker compose up -d --build web`
-- reads `WORKER_TOKEN` and `WEB_PORT` from `.env`
-- starts the sibling `sentinelCam-worker` locally
-- sets `WEB_AUTH_TOKEN` and `WEB_ALLOWED_ORIGINS` for the worker
-
-### Manual Windows Start
-
-Start the web app:
-
-```powershell
-docker compose up -d --build web
-```
-
-Start the worker in a second PowerShell window:
-
-```powershell
-cd ..\sentinelCam-worker
-$env:WEB_AUTH_TOKEN = "<same value as WORKER_TOKEN in sentinelCam-web\\.env>"
-$env:WEB_ALLOWED_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
-.\run.bat --host 0.0.0.0 --source 0 --no-window --stream auto
-```
-
-No-camera smoke test:
-
-```powershell
-.\run.bat --host 0.0.0.0 --source synthetic --no-window --stream auto
-```
-
-Then open:
-
-```text
-http://localhost:3000
-```
-
-## 3. Start On Linux
-
-You have two supported Linux paths:
-
-1. Docker web + local worker
-2. Full Docker stack
-
-### Option A: Docker Web + Local Worker
-
-From `sentinelCam-web`:
+The previous HTTP-level smoke tests targeted the SQLite + worker-proxy
+architecture and have been replaced by import-level checks for now:
 
 ```bash
-cp .env.example .env
-nano .env
-bash ./scripts/start-local-worker.sh
+python -m unittest discover -s tests
 ```
 
-What this does:
-
-- starts the `web` container with `docker compose up -d --build web`
-- exports `WEB_AUTH_TOKEN` and `WEB_ALLOWED_ORIGINS`
-- launches the sibling `sentinelCam-worker` with `--host 0.0.0.0 --no-window --stream auto`
-
-Manual variant:
-
-```bash
-docker compose up -d --build web
-cd ../sentinelCam-worker
-export WEB_AUTH_TOKEN="<same value as WORKER_TOKEN in ../sentinelCam-web/.env>"
-export WEB_ALLOWED_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
-bash ./run.sh --host 0.0.0.0 --source 0 --no-window --stream auto
-```
-
-No-camera smoke test:
-
-```bash
-bash ./run.sh --host 0.0.0.0 --source synthetic --no-window --stream auto
-```
-
-### Option B: Full Linux Docker Stack
-
-From `sentinelCam-web`:
-
-```bash
-cp .env.example .env
-nano .env
-docker compose up -d --build
-```
-
-This starts:
-
-- `web` on port `3000`
-- `worker` on port `8080`
-
-Important Linux Docker notes:
-
-- default worker source is `WORKER_SOURCE=0`
-- default camera device is `/dev/video0`
-- use `WORKER_VIDEO_DEVICE=/dev/video2` for a different camera
-- use `WORKER_SOURCE=rtsp://...` for RTSP or another remote source
-- use `WORKER_SOURCE=synthetic` and `WORKER_VIDEO_DEVICE=/dev/null` if you want Docker smoke tests without a webcam
-
-Then open:
-
-```text
-http://localhost:3000
-```
-
-## 4. Start On macOS
-
-Recommended path:
-
-- web in Docker
-- worker locally in Terminal
-
-There is no dedicated macOS helper script in this repo, so the manual path is the normal path.
-
-### Manual macOS Start
-
-From `sentinelCam-web`:
-
-```bash
-cp .env.example .env
-open -e .env
-docker compose up -d --build web
-```
-
-Then from `sentinelCam-worker`:
-
-```bash
-cd ../sentinelCam-worker
-export WEB_AUTH_TOKEN="<same value as WORKER_TOKEN in ../sentinelCam-web/.env>"
-export WEB_ALLOWED_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
-bash ./run.sh --host 0.0.0.0 --source 0 --no-window --stream auto
-```
-
-No-camera smoke test:
-
-```bash
-bash ./run.sh --host 0.0.0.0 --source synthetic --no-window --stream auto
-```
-
-macOS note:
-
-- On first camera use, macOS may ask you to allow camera access for Terminal, iTerm, or Python.
-
-Then open:
-
-```text
-http://localhost:3000
-```
-
-## 5. Run The Web App Without Docker
-
-This is optional. The Docker path above is the recommended one.
-
-The dependency set is maintained for Python 3.12, 3.13, and 3.14. Docker builds default to Python 3.14; set `PYTHON_VERSION=3.13` or `PYTHON_VERSION=3.12` before `docker compose build` to build an older supported runtime.
-
-When the web app runs directly on the host instead of Docker:
-
-- the default `WORKER_BASE_URL=http://127.0.0.1:8080` usually works
-- the worker can stay on `127.0.0.1`
-- set `SC_PUBLIC=1` in `.env` if you want the web app to bind to `0.0.0.0`
-
-### Windows
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python run_web.py
-```
-
-### Linux / macOS
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python run_web.py
-```
-
-Then open:
-
-```text
-http://127.0.0.1:3000
-```
-
-## 6. Verify The Stack
-
-Check the web app:
-
-Windows PowerShell:
-
-```powershell
-docker compose ps
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3000/healthz | Select-Object -ExpandProperty Content
-```
-
-Linux / macOS:
-
-```bash
-docker compose ps
-curl http://127.0.0.1:3000/healthz
-```
-
-Check the worker:
-
-Windows PowerShell:
-
-```powershell
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/health | Select-Object -ExpandProperty Content
-```
-
-Linux / macOS:
-
-```bash
-curl http://127.0.0.1:8080/health
-```
-
-Log in to the web app with `ADMIN_USER` / `ADMIN_PASSWORD` from `.env`.
-
-## 6.5 TLS With The Bundled Caddy Overlay
-
-For anything beyond a single-machine demo you should put TLS in front of the
-web service. The repo ships a Caddy sidecar overlay that handles this for you
-and removes the direct port-80 binding of the web container.
-
-```bash
-# Optional: set a real hostname + email for Let's Encrypt
-echo "SC_PUBLIC_HOSTNAME=cam.example.com" >> .env
-echo "SC_TLS_EMAIL=you@example.com"      >> .env
-
-docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
-```
-
-What changes:
-
-- Caddy listens on `80` + `443` (TCP + UDP for HTTP/3). Plain HTTP is 301'd
-  to HTTPS.
-- The `web` container stops publishing its own port; the only ingress is
-  Caddy on the internal Docker network.
-- The web app is started with `SC_FORWARDED_ALLOW_IPS=*` so it honors the
-  `X-Forwarded-Proto` / `X-Forwarded-Host` headers Caddy injects. This is
-  safe because Caddy is the only peer that can reach the web service in
-  this topology.
-
-Defaults:
-
-- If `SC_PUBLIC_HOSTNAME` is unset, Caddy serves `sentinelcam.local` with
-  its built-in local CA. Browsers will warn on first visit; import
-  `/data/caddy/pki/authorities/local/root.crt` from inside the `caddy`
-  container into your trust store to silence the warning on your own
-  devices.
-- If `SC_PUBLIC_HOSTNAME` resolves to a public IP and `SC_TLS_EMAIL` is set,
-  Caddy provisions a real Let's Encrypt certificate automatically.
-
-Without this overlay the bare `docker-compose.yml` exposes the web app on
-port 80 in cleartext. That is fine for local LAN testing but should not be
-used over the public internet.
-
-## 7. Stop The Stack
-
-Stop Docker services:
-
-```bash
-docker compose down
-```
-
-If the worker is running locally, stop it in its own terminal with `Ctrl+C`.
-
-## Useful Environment Variables
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `WORKER_TOKEN` | none | Shared secret between web proxy and worker |
-| `WORKER_BASE_URL` | app default `http://127.0.0.1:8080`, Compose default `http://host.docker.internal:8080` | Worker base URL used by the proxy |
-| `WEB_PORT` | `3000` | Web app port |
-| `SC_PUBLIC` | `0` | Bind to `0.0.0.0` when running the web app directly |
-| `ADMIN_USER` | `admin` | Initial admin username for first boot |
-| `ADMIN_PASSWORD` | none | Initial admin password for first boot |
-| `WEBAUTHN_RP_ID` | `localhost` | Passkey relying-party ID for local development |
-| `WORKER_SOURCE` | unset | Worker source for helper scripts and Linux Docker worker |
-| `WORKER_BIND_HOST` | `0.0.0.0` | Bind host for helper-started Linux worker and Linux Docker worker |
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Native host Ollama endpoint used by the worker for context detection |
-| `DEFAULT_CONTEXT_PROFILE` | `auto` | Worker context model profile: `low`, `mid`, `high`, `max`, or `auto` |
-| `WORKER_VIDEO_DEVICE` | `/dev/video0` | Linux webcam device for Docker passthrough |
-| `WORKER_STREAM_MODE` | `auto` | Linux Docker worker stream mode |
-| `WORKER_PERFORMANCE_PROFILE` | `auto` | Linux Docker worker performance tuning |
-| `WORKER_STREAM_QUALITY` | `auto` | Linux Docker worker quality preset |
-| `WORKER_JPEG_QUALITY` | `88` | Linux Docker worker MJPEG quality |
-| `WORKER_WEBRTC_CODEC` | `auto` | Linux Docker worker preferred WebRTC codec |
-| `WORKER_WEBRTC_BITRATE` | `-1` | Linux Docker worker WebRTC bitrate in kbps |
-| `WORKER_WEBRTC_FPS` | `0` | Linux Docker worker WebRTC FPS |
-| `WORKER_CAMERA_FPS` | `0` | Linux Docker worker requested capture FPS |
-
-## Troubleshooting
-
-- If the web container cannot reach the worker on Windows, Linux, or macOS, make sure the local worker was started with `--host 0.0.0.0` when the web app itself runs in Docker.
-- If you do not have a webcam yet, use `WORKER_SOURCE=synthetic` or `--source synthetic`.
-- If Linux Docker cannot open the camera, check `WORKER_VIDEO_DEVICE` and make sure the device exists.
-- If the admin login does not work on a reused database, remember that `ADMIN_PASSWORD` is only consumed on first startup.
-
-## Project Layout
+## Repository layout
 
 ```text
 app/
-  auth/
-  dashboard/
-  gallery/
-  proxy/
-  recording/
+  auth/        password + WebAuthn flow
+  dashboard/   admin routes (users, sessions, ops)
+  gallery/     gallery pages and JSON feed
+  recording/   upload + serve + delete (MinIO-backed)
+  config.py    typed settings (env-driven)
+  database.py  PostgreSQL pool + aiosqlite-compatible shim
+  storage.py   MinIO/S3 helpers
+  main.py      FastAPI app + middleware
 static/
 templates/
-scripts/
-  start-local-worker.ps1
-  start-local-worker.sh
-  start-docker-worker.sh
+Caddyfile
 docker-compose.yml
-run_web.py
+Dockerfile
+.env.example
 ```
 
-## Related Repos
+## Environment variables
 
-- Worker: `../sentinelCam-worker`
-- Edge capture node: `sentinelCam-edge`
+| Variable | Purpose |
+|---|---|
+| `ADMIN_USER` / `ADMIN_PASSWORD` | First-boot admin credentials |
+| `WEBAUTHN_RP_ID` | Passkey relying-party ID — must match the hostname |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | MinIO root + web container S3 credentials |
+| `S3_BUCKET` | Bucket name for recordings + thumbnails (default `recordings`) |
+| `SC_PUBLIC_HOSTNAME` | DNS name Caddy serves (default `sentinelcam.local`) |
+| `SC_TLS_EMAIL` | Let's Encrypt email (default `internal`) |
+| `WG_HOST` | Hostname/IP that VPN clients dial |
+| `WG_PORT` | WireGuard UDP port (default 51820) |
+| `WG_PASSWORD_HASH` | Bcrypt hash for the wg-easy admin UI |
+
+See `.env.example` for the full list with defaults.

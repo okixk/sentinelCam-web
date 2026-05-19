@@ -4,6 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && \
     apt-get upgrade -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends libglib2.0-0 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd -g 1000 sentinelcam && \
@@ -13,7 +14,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=sentinelcam:sentinelcam . .
-RUN mkdir -p data/recordings && chown -R sentinelcam:sentinelcam data
 
 USER sentinelcam
 
