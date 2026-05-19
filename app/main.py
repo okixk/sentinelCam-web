@@ -11,14 +11,14 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.database import close_pool, init_db
-from app.storage import ensure_bucket
+from app.storage import ensure_storage
 from app.thumbnail_jobs import shutdown_thumbnail_jobs
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await ensure_bucket()
+    await ensure_storage()
     try:
         yield
     finally:

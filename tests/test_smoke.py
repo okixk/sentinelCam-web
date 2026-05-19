@@ -1,9 +1,10 @@
 """Import-level smoke tests.
 
 The full HTTP-level test suite was tied to the old SQLite + worker-proxy
-architecture; after the move to PostgreSQL + MinIO + Caddy + WireGuard those
-tests need rebuilding against ephemeral testcontainers. Until that lands the
-checks below at least catch broken imports and obvious wiring problems.
+architecture; after the move to PostgreSQL + local Docker storage + Caddy +
+WireGuard those tests need rebuilding against ephemeral testcontainers. Until
+that lands the checks below at least catch broken imports and obvious wiring
+problems.
 """
 from __future__ import annotations
 

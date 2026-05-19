@@ -8,7 +8,9 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd -g 1000 sentinelcam && \
-    useradd -u 1000 -g sentinelcam -m sentinelcam
+    useradd -u 1000 -g sentinelcam -m sentinelcam && \
+    mkdir -p /data/recordings && \
+    chown -R sentinelcam:sentinelcam /data
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

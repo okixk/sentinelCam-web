@@ -1,4 +1,4 @@
-/* capture.js - Browser webcam capture that uploads to MinIO via /api/recordings/upload */
+/* capture.js - Browser webcam capture that uploads via /api/recordings/upload */
 
 (function () {
   const csrf = () => document.cookie.match(/csrf_token=([^;]+)/)?.[1] || "";

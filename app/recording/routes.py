@@ -15,9 +15,9 @@ from app.config import settings
 from app.database import get_db
 from app.storage import (
     delete_many,
+    head_object,
     object_response_headers,
     recording_key,
-    s3_client,
     stream_object,
     thumbnail_key,
     upload_stream,
@@ -290,11 +290,7 @@ async def serve_recording_file(
     media_type = MEDIA_TYPE_MAP.get(ext, "application/octet-stream")
     key = recording_key(int(row["user_id"]), safe_name)
 
-    async with s3_client() as client:
-        try:
-            head = await client.head_object(Bucket=settings.s3_bucket, Key=key)
-        except Exception:
-            head = None
+    head = await head_object(key)
 
     headers = object_response_headers(head or {})
     headers.setdefault("Cache-Control", "private, max-age=300")

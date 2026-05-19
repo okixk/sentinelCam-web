@@ -134,9 +134,9 @@ async function loadOpsStatus(options = {}) {
         <div class="small">Last recording: ${thumbnail.last_recording_id || "-"}</div>
       </div>
       <div class="stack-note-card">
-        <strong>Object storage</strong>
-        <div class="small">Endpoint: ${escHtml(storage.endpoint || "-")}</div>
-        <div class="small">Bucket: ${escHtml(storage.bucket || "-")}</div>
+        <strong>Recording storage</strong>
+        <div class="small">Type: ${escHtml(storage.type || "local")}</div>
+        <div class="small">Path: ${escHtml(storage.path || "-")}</div>
       </div>
       <div class="stack-note-card">
         <strong>Database</strong>
@@ -397,8 +397,8 @@ function loadSystemInfo() {
       <div class="small">Reach the stack remotely through the WireGuard server bundled with the stack. The wg-easy admin UI is served at <code>/vpn/</code> on this host.</div>
     </div>
     <div class="stack-note-card">
-      <strong>Object storage console</strong>
-      <div class="small">MinIO admin UI is served at <code>/minio/</code> on this host (admin role only). Recordings are stored in the <code>recordings</code> bucket.</div>
+      <strong>Recording storage</strong>
+      <div class="small">Recordings and thumbnails are stored in the web container's local Docker volume.</div>
     </div>`;
   if (typeof initCopyButtons === "function") initCopyButtons();
 }

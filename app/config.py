@@ -39,13 +39,11 @@ class Settings(BaseSettings):
     postgres_min_pool: int = 2
     postgres_max_pool: int = 10
 
-    # S3 / MinIO object storage
-    s3_endpoint_url: str = "http://minio:9000"
-    s3_access_key: str = ""
-    s3_secret_key: str = ""
-    s3_bucket: str = "recordings"
-    s3_region: str = "us-east-1"
-    s3_use_ssl: bool = False
+    # Local recording storage
+    local_storage_path: str = Field(
+        default="data/recordings",
+        validation_alias=AliasChoices("LOCAL_STORAGE_PATH", "STORAGE_PATH"),
+    )
 
     @field_validator(
         "webauthn_rp_id",
@@ -56,11 +54,7 @@ class Settings(BaseSettings):
         "postgres_db",
         "postgres_user",
         "postgres_password",
-        "s3_endpoint_url",
-        "s3_access_key",
-        "s3_secret_key",
-        "s3_bucket",
-        "s3_region",
+        "local_storage_path",
         mode="before",
     )
     @classmethod

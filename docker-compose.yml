@@ -1,13 +1,13 @@
-# Full sentinelCam stack: web app + reverse proxy + database + object storage + VPN.
+# Full sentinelCam stack: web app + reverse proxy + database + local storage + VPN.
 #
 # Bring everything up:
 #   cp .env.example .env   # fill in the secrets first
 #   docker compose up -d --build
 #
 # Only Caddy and the VPN need host ports. Everything else lives on the
-# internal `sentinelcam` network. Admin consoles (MinIO, wg-easy) are bound
-# to loopback so they're reachable from the host but not the public internet
-# until you choose to expose them.
+# internal `sentinelcam` network. The wg-easy admin console is bound to
+# loopback so it's reachable from the host but not the public internet until
+# you choose to expose it.
 
 name: sentinelcam
 
@@ -17,7 +17,7 @@ networks:
 
 volumes:
   postgres-data:
-  minio-data:
+  recordings-data:
   caddy-data:
   caddy-config:
   wireguard-data:
@@ -40,29 +40,6 @@ services:
       retries: 12
       start_period: 10s
 
-  minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set in .env}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set in .env}
-      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL:-http://127.0.0.1:9001}
-    volumes:
-      - minio-data:/data
-    ports:
-      # Admin console on loopback only. Open an SSH tunnel or reach it via VPN
-      # to use the browser console. The S3 API is internal-only (web container
-      # talks to it on the sentinelcam network).
-      - "127.0.0.1:9001:9001"
-    networks: [sentinelcam]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/ready || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
-
   web:
     build:
       context: .
@@ -71,8 +48,6 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     environment:
       WEB_PORT: ${WEB_PORT:-3000}
@@ -86,12 +61,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-sentinelcam}
       POSTGRES_USER: ${POSTGRES_USER:-sentinelcam}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      S3_BUCKET: ${S3_BUCKET:-recordings}
-      S3_REGION: ${S3_REGION:-us-east-1}
-      S3_USE_SSL: "false"
+      LOCAL_STORAGE_PATH: ${LOCAL_STORAGE_PATH:-/data/recordings}
+    volumes:
+      - recordings-data:${LOCAL_STORAGE_PATH:-/data/recordings}
     networks: [sentinelcam]
     expose:
       - "3000"

@@ -2,52 +2,57 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
-
-import aioboto3
-from botocore.config import Config
-from botocore.exceptions import ClientError
+import os
+import uuid
+from collections.abc import AsyncIterator
+from pathlib import Path, PurePosixPath
+from typing import Optional
 
 from app.config import settings
 
 log = logging.getLogger("sentinelCam.storage")
 
 
-_session: Optional[aioboto3.Session] = None
-_bucket_ready = False
-_bucket_lock = asyncio.Lock()
+_storage_ready = False
+_storage_lock = asyncio.Lock()
 
 
-def _session_singleton() -> aioboto3.Session:
-    global _session
-    if _session is None:
-        _session = aioboto3.Session(
-            aws_access_key_id=settings.s3_access_key,
-            aws_secret_access_key=settings.s3_secret_key,
-            region_name=settings.s3_region,
-        )
-    return _session
+def _storage_root() -> Path:
+    return Path(settings.local_storage_path).expanduser().resolve()
 
 
-def _client_kwargs() -> dict:
+def _path_for_key(key: str) -> Path:
+    if not key or "\\" in key:
+        raise ValueError("Invalid storage key")
+
+    key_path = PurePosixPath(key)
+    if key_path.is_absolute():
+        raise ValueError("Invalid storage key")
+
+    parts = key_path.parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise ValueError("Invalid storage key")
+
+    root = _storage_root()
+    target = root.joinpath(*parts).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Invalid storage key") from exc
+    return target
+
+
+def _etag_from_stat(stat_result: os.stat_result) -> str:
+    return f'"{stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"'
+
+
+def _object_metadata(path: Path) -> dict:
+    stat_result = path.stat()
     return {
-        "service_name": "s3",
-        "endpoint_url": settings.s3_endpoint_url or None,
-        "use_ssl": settings.s3_use_ssl,
-        "config": Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"},
-            retries={"max_attempts": 3, "mode": "standard"},
-        ),
+        "ContentLength": stat_result.st_size,
+        "ETag": _etag_from_stat(stat_result),
+        "LastModified": stat_result.st_mtime,
     }
-
-
-@asynccontextmanager
-async def s3_client() -> AsyncIterator:
-    session = _session_singleton()
-    async with session.client(**_client_kwargs()) as client:
-        yield client
 
 
 def recording_key(user_id: int, filename: str) -> str:
@@ -58,42 +63,32 @@ def thumbnail_key(user_id: int, source_stem: str) -> str:
     return f"recordings/{int(user_id)}/thumb_{source_stem}.jpg"
 
 
-async def ensure_bucket() -> None:
-    global _bucket_ready
-    if _bucket_ready:
+async def ensure_storage() -> None:
+    global _storage_ready
+    if _storage_ready:
         return
-    async with _bucket_lock:
-        if _bucket_ready:
+    async with _storage_lock:
+        if _storage_ready:
             return
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                async with s3_client() as client:
-                    try:
-                        await client.head_bucket(Bucket=settings.s3_bucket)
-                    except ClientError as exc:
-                        code = exc.response.get("Error", {}).get("Code", "")
-                        if code in ("404", "NoSuchBucket", "NotFound"):
-                            await client.create_bucket(Bucket=settings.s3_bucket)
-                        else:
-                            raise
-                _bucket_ready = True
-                log.info("Object storage bucket %r ready at %s", settings.s3_bucket, settings.s3_endpoint_url)
-                return
-            except (ClientError, OSError) as exc:
-                if attempt >= 30:
-                    raise
-                log.warning("Object storage not ready (attempt %d): %s", attempt, exc)
-                await asyncio.sleep(2.0)
+        root = _storage_root()
+        await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+        _storage_ready = True
+        log.info("Local recording storage ready at %s", root)
 
 
 async def put_bytes(key: str, data: bytes, content_type: str | None = None) -> None:
-    extra: dict = {"Bucket": settings.s3_bucket, "Key": key, "Body": data}
-    if content_type:
-        extra["ContentType"] = content_type
-    async with s3_client() as client:
-        await client.put_object(**extra)
+    target = _path_for_key(key)
+
+    def write_file() -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp_path.write_bytes(data)
+            os.replace(tmp_path, target)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    await asyncio.to_thread(write_file)
 
 
 async def upload_stream(
@@ -103,57 +98,54 @@ async def upload_stream(
     sniff_bytes: int = 32,
     content_type: str | None = None,
 ) -> tuple[int, bytes]:
-    """Streaming upload from a FastAPI UploadFile to S3, with a size cap and a
-    short prefix returned for magic-byte sniffing."""
+    """Store an UploadFile on local disk with a size cap and sniffing prefix."""
     from fastapi import HTTPException
+
+    target = _path_for_key(key)
+    await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+    tmp_path = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
 
     head = bytearray()
     total = 0
-    chunks: list[bytes] = []
 
     try:
-        while True:
-            chunk = await upload.read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > max_bytes:
-                raise HTTPException(413, "File too large")
-            if len(head) < sniff_bytes:
-                need = sniff_bytes - len(head)
-                head.extend(chunk[:need])
-            chunks.append(chunk)
+        with tmp_path.open("wb") as handle:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(413, "File too large")
+                if len(head) < sniff_bytes:
+                    need = sniff_bytes - len(head)
+                    head.extend(chunk[:need])
+                handle.write(chunk)
+        await asyncio.to_thread(os.replace, tmp_path, target)
+        return total, bytes(head)
     finally:
         await upload.close()
-
-    body = b"".join(chunks)
-    await put_bytes(key, body, content_type=content_type)
-    return total, bytes(head)
+        await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
 
 
 async def get_bytes(key: str) -> bytes:
-    async with s3_client() as client:
-        try:
-            resp = await client.get_object(Bucket=settings.s3_bucket, Key=key)
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("NoSuchKey", "404", "NotFound"):
-                raise FileNotFoundError(key) from exc
-            raise
-        async with resp["Body"] as stream:
-            return await stream.read()
+    path = _path_for_key(key)
+    try:
+        return await asyncio.to_thread(path.read_bytes)
+    except FileNotFoundError:
+        raise FileNotFoundError(key) from None
 
 
 async def head_object(key: str) -> Optional[dict]:
-    async with s3_client() as client:
+    path = _path_for_key(key)
+
+    def read_metadata() -> Optional[dict]:
         try:
-            resp = await client.head_object(Bucket=settings.s3_bucket, Key=key)
-            return dict(resp)
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("404", "NoSuchKey", "NotFound"):
-                return None
-            raise
+            return _object_metadata(path)
+        except FileNotFoundError:
+            return None
+
+    return await asyncio.to_thread(read_metadata)
 
 
 async def object_exists(key: str) -> bool:
@@ -162,55 +154,34 @@ async def object_exists(key: str) -> bool:
 
 async def stream_object(key: str, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
     """Async iterator that yields chunks for a stored object."""
-    async with s3_client() as client:
-        try:
-            resp = await client.get_object(Bucket=settings.s3_bucket, Key=key)
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("NoSuchKey", "404", "NotFound"):
-                raise FileNotFoundError(key) from exc
-            raise
-        async with resp["Body"] as body:
-            while True:
-                chunk = await body.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
+    path = _path_for_key(key)
+    if not await asyncio.to_thread(path.is_file):
+        raise FileNotFoundError(key)
+
+    with path.open("rb") as handle:
+        while True:
+            chunk = await asyncio.to_thread(handle.read, chunk_size)
+            if not chunk:
+                break
+            yield chunk
 
 
 async def delete_object(key: str) -> None:
-    async with s3_client() as client:
-        try:
-            await client.delete_object(Bucket=settings.s3_bucket, Key=key)
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("NoSuchKey", "404", "NotFound"):
-                return
-            raise
+    path = _path_for_key(key)
+    await asyncio.to_thread(path.unlink, missing_ok=True)
 
 
 async def delete_many(keys: list[str]) -> None:
-    keys = [k for k in keys if k]
-    if not keys:
-        return
-    async with s3_client() as client:
-        try:
-            await client.delete_objects(
-                Bucket=settings.s3_bucket,
-                Delete={"Objects": [{"Key": k} for k in keys], "Quiet": True},
-            )
-        except ClientError as exc:
-            log.warning("delete_objects failed (%s); falling back to per-key delete", exc)
-            for k in keys:
-                await delete_object(k)
+    for key in [k for k in keys if k]:
+        await delete_object(key)
 
 
-def object_response_headers(s3_response: dict) -> dict[str, str]:
+def object_response_headers(object_metadata: dict) -> dict[str, str]:
     headers: dict[str, str] = {}
-    length = s3_response.get("ContentLength")
+    length = object_metadata.get("ContentLength")
     if length is not None:
         headers["Content-Length"] = str(length)
-    etag = s3_response.get("ETag")
+    etag = object_metadata.get("ETag")
     if etag:
         headers["ETag"] = etag
     return headers

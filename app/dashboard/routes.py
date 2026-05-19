@@ -208,8 +208,8 @@ async def admin_ops(admin: User = Depends(require_admin)):
         {
             "thumbnail": get_thumbnail_job_stats(),
             "storage": {
-                "bucket": settings.s3_bucket,
-                "endpoint": settings.s3_endpoint_url,
+                "type": "local",
+                "path": settings.local_storage_path,
             },
             "database": {
                 "host": settings.postgres_host,
