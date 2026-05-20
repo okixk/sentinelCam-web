@@ -34,6 +34,19 @@ function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+function formatSize(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let idx = 0;
+  let n = value;
+  while (n >= 1024 && idx < units.length - 1) {
+    n /= 1024;
+    idx += 1;
+  }
+  return `${n.toFixed(n >= 100 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
 const appUI = window.AppUI || {};
 const toast = typeof appUI.toast === "function" ? appUI.toast : () => null;
 const confirmDialog = typeof appUI.confirm === "function" ? appUI.confirm : async () => false;
@@ -140,34 +153,73 @@ async function loadOpsStatus(options = {}) {
     opsStatusFailureCount = 0;
     const thumbnail = data.thumbnail || {};
     const storage = data.storage || {};
+    const disk = storage.disk || {};
     const database = data.database || {};
-    const queueSummary = `${thumbnail.pending_count || 0} pending | ${thumbnail.inflight_count || 0} inflight | ${thumbnail.active_tasks || 0} active tasks`;
+    const sessions = data.sessions || {};
+    const worker = data.worker || {};
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+
+    const dbBadge = database.ok
+      ? `<span class="status-pill ok">OK · ${database.latency_ms ?? "?"} ms</span>`
+      : `<span class="status-pill error">DOWN</span>`;
+    const workerBadge = worker.configured
+      ? `<span class="status-pill ok">configured</span>`
+      : `<span class="status-pill neutral">not configured</span>`;
+    const queueSummary = `${thumbnail.pending_count || 0} pending | ${thumbnail.inflight_count || 0} inflight | ${thumbnail.active_tasks || 0} active`;
     const resultSummary = `${thumbnail.completed_count || 0} completed | ${thumbnail.failed_count || 0} failed`;
+    const recordingsBytes = storage.recordings_bytes;
+    const recordingsSize = recordingsBytes == null ? "-" : formatSize(recordingsBytes);
+    const diskTotal = disk.total_bytes ? formatSize(disk.total_bytes) : "-";
+    const diskFree = disk.free_bytes ? formatSize(disk.free_bytes) : "-";
+    const diskPercent = (disk.total_bytes && disk.used_bytes)
+      ? ((disk.used_bytes / disk.total_bytes) * 100).toFixed(1) + "%"
+      : "-";
+    const uptime = formatDuration(data.uptime_seconds || 0);
+
+    const errorRows = errors.length
+      ? errors.slice(0, 10).map(e => `
+          <div class="small">
+            <strong>${escHtml(e.level || "WARNING")}</strong>
+            <span class="ops-error-time">${formatDate(e.timestamp)}</span>
+            <span class="ops-error-logger">${escHtml(e.logger || "-")}</span>
+            <div class="ops-error-msg">${escHtml(e.message || "")}</div>
+          </div>`).join("")
+      : '<div class="small">No recent errors recorded.</div>';
+
     el.innerHTML = `
+      <div class="stack-note-card">
+        <strong>Process</strong>
+        <div class="small">Uptime: ${uptime}</div>
+      </div>
+      <div class="stack-note-card">
+        <strong>Database</strong> ${dbBadge}
+        <div class="small">${escHtml(database.host || "-")}:${database.port || "-"} / ${escHtml(database.db || "-")}</div>
+        ${database.ok ? "" : `<div class="small error">${escHtml(database.error || "")}</div>`}
+      </div>
+      <div class="stack-note-card">
+        <strong>Recording storage</strong>
+        <div class="small">Path: ${escHtml(storage.path || "-")}</div>
+        <div class="small">Used by recordings: ${recordingsSize}</div>
+        <div class="small">Disk: ${diskFree} free of ${diskTotal} (${diskPercent} used)</div>
+      </div>
+      <div class="stack-note-card">
+        <strong>Sessions</strong>
+        <div class="small">Active: ${sessions.active != null ? sessions.active : "-"}</div>
+      </div>
+      <div class="stack-note-card">
+        <strong>Worker</strong> ${workerBadge}
+        <div class="small">${escHtml(worker.reason || "-")}</div>
+      </div>
       <div class="stack-note-card">
         <strong>Thumbnail queue</strong>
         <div class="small">${queueSummary}</div>
         <div class="small">${resultSummary}</div>
-      </div>
-      <div class="stack-note-card">
-        <strong>Thumbnail timings</strong>
         <div class="small">Last success: ${thumbnail.last_success_at ? formatDate(thumbnail.last_success_at) : "-"}</div>
         <div class="small">Last failure: ${thumbnail.last_failure_at ? formatDate(thumbnail.last_failure_at) : "-"}</div>
-        <div class="small">Last recording: ${thumbnail.last_recording_id || "-"}</div>
       </div>
-      <div class="stack-note-card">
-        <strong>Recording storage</strong>
-        <div class="small">Type: ${escHtml(storage.type || "local")}</div>
-        <div class="small">Path: ${escHtml(storage.path || "-")}</div>
-      </div>
-      <div class="stack-note-card">
-        <strong>Database</strong>
-        <div class="small">Host: ${escHtml(database.host || "-")}:${database.port || "-"}</div>
-        <div class="small">Database: ${escHtml(database.db || "-")}</div>
-      </div>
-      <div class="stack-note-card">
-        <strong>Latest issues</strong>
-        <div class="small">${escHtml(thumbnail.last_error || "No recent errors.")}</div>
+      <div class="stack-note-card ops-error-card">
+        <strong>Recent errors (last 10)</strong>
+        ${errorRows}
       </div>`;
     scheduleOpsStatusPoll(OPS_POLL_BASE_MS);
   } catch (err) {

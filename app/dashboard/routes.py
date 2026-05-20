@@ -13,6 +13,12 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import User, check_csrf, require_admin
 from app.config import settings
 from app.database import get_db
+from app.observability import (
+    directory_size_bytes,
+    disk_usage,
+    process_uptime_seconds,
+    recent_errors,
+)
 from app.runtime_settings import apply_security_config, get_security_config, save_security_config
 from app.security import hash_password
 from app.security import login_rate_limiter
@@ -261,19 +267,81 @@ async def revoke_session(
     return JSONResponse({"ok": True})
 
 
+async def _measure_database() -> dict[str, object]:
+    """Round-trip a trivial query to confirm the pool is healthy."""
+    started = time.perf_counter()
+    try:
+        async with get_db() as conn:
+            await conn.execute("SELECT 1")
+    except Exception as exc:
+        return {
+            "host": settings.postgres_host,
+            "port": settings.postgres_port,
+            "db": settings.postgres_db,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "host": settings.postgres_host,
+        "port": settings.postgres_port,
+        "db": settings.postgres_db,
+        "ok": True,
+        "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
+    }
+
+
+async def _count_active_sessions() -> int:
+    try:
+        async with get_db() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) AS c FROM sessions WHERE expires_at > ?",
+                (time.time(),),
+            )
+            row = await cursor.fetchone()
+    except Exception:
+        return -1
+    if row is None:
+        return 0
+    try:
+        return int(row["c"])
+    except (TypeError, KeyError, ValueError):
+        try:
+            return int(row[0])
+        except Exception:
+            return -1
+
+
+def _worker_status_placeholder() -> dict[str, object]:
+    """Stub until the Pi -> web -> worker pipeline lands.
+
+    The status panel reserves a slot so admins know the feature exists and is
+    intentionally unconfigured, instead of silently omitting it.
+    """
+    return {
+        "configured": False,
+        "reason": "Worker integration not configured. Pipeline is pending design approval.",
+    }
+
+
 @router.get("/api/admin/ops")
 async def admin_ops(admin: User = Depends(require_admin)):
+    db_status = await _measure_database()
+    storage_path = settings.local_storage_path
     return JSONResponse(
         {
+            "uptime_seconds": process_uptime_seconds(),
             "thumbnail": get_thumbnail_job_stats(),
             "storage": {
                 "type": "local",
-                "path": settings.local_storage_path,
+                "path": storage_path,
+                "disk": disk_usage(storage_path),
+                "recordings_bytes": directory_size_bytes(storage_path),
             },
-            "database": {
-                "host": settings.postgres_host,
-                "port": settings.postgres_port,
-                "db": settings.postgres_db,
+            "database": db_status,
+            "sessions": {
+                "active": await _count_active_sessions(),
             },
+            "worker": _worker_status_placeholder(),
+            "errors": recent_errors(limit=50),
         }
     )
