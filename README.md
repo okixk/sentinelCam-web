@@ -1,8 +1,8 @@
 # sentinelCam Web
 
 Browser-first camera capture and gallery service. Runs as a single Docker
-Compose stack with four services: the FastAPI app, a Caddy reverse proxy, a
-PostgreSQL database, and a wg-easy WireGuard server for remote access.
+Compose stack with four services: the FastAPI app, an Apache reverse proxy,
+a PostgreSQL database, and a wg-easy WireGuard server for remote access.
 Recordings are stored in a local Docker volume mounted into the web container.
 
 ## What you get
@@ -11,27 +11,38 @@ Recordings are stored in a local Docker volume mounted into the web container.
 - In-browser camera capture (image + video) via `MediaDevices` + `MediaRecorder`
 - Recordings + thumbnails stored on local Docker storage
 - Users, sessions, passkeys, and recording metadata in PostgreSQL
-- Caddy in front, terminating TLS (local CA by default, Let's Encrypt when you
-  set `SC_PUBLIC_HOSTNAME` + `SC_TLS_EMAIL`)
+- Apache in front, terminating TLS (self-signed cert generated on first boot;
+  swap in any cert pair `server.crt` + `server.key` in the `apache-certs`
+  volume to replace it)
 - WireGuard VPN (wg-easy) for remote access
 
-## Architecture
+## Architecture and exposed ports
+
+Only **three** ports are exposed to the outside world. Everything else lives on
+the internal `sentinelcam` Docker network or on host loopback.
 
 ```text
-browser
-  |  HTTPS (or via VPN)
-  v
-caddy ---- http://web:3000 ----> fastapi (this repo)
-                                |      |
-                                |      +--> postgres:5432  (auth, sessions, recordings)
-                                |      +--> /data/recordings (local Docker volume)
-wg-easy -- UDP 51820/udp ------> host network (VPN tunnel for remote clients)
+                                                    +-----------------+
+                  TCP 80   ---->  Apache  ----+---->|                 |
+                  TCP 443  ---->  (TLS)       |     |  web (FastAPI)  |---> postgres:5432
+   internet  -->                              |     |   on web:3000   |---> /data/recordings (volume)
+                  UDP 1194 ---->  wg-easy ----+     +-----------------+
+                                  (WireGuard)
 ```
 
-Only Caddy and wg-easy publish ports to the host. PostgreSQL stays on the
-internal `sentinelcam` Docker network. Recording files stay in the
-`recordings-data` Docker volume mounted at `/data/recordings` in the web
-container.
+| External port | Service     | Purpose                                              |
+|---------------|-------------|------------------------------------------------------|
+| `80/tcp`      | apache      | HTTP -> 301 to HTTPS                                 |
+| `443/tcp`     | apache      | HTTPS reverse-proxy to web                           |
+| `1194/udp`    | wg-easy     | WireGuard VPN (configurable via `WG_PORT`)           |
+| (none public) | postgres    | Internal-network only                                |
+| (none public) | web         | Internal-network only (Apache talks to it on `:3000`)|
+| `127.0.0.1:51821` | wg-easy admin UI | Host loopback only; reach via SSH tunnel or VPN  |
+
+> The VPN port is **WireGuard on UDP/1194**. WireGuard speaks WireGuard
+> regardless of the port number it sits on — VPN clients need a
+> **WireGuard** client, not an OpenVPN client. Set `WG_PORT` in `.env` to
+> any UDP port you prefer.
 
 ## Quick start
 
@@ -41,7 +52,7 @@ container.
    docker run --rm ghcr.io/wg-easy/wg-easy:14 wgpw 'your-vpn-admin-password'
    ```
 
-2. Copy `.env.example` to `.env` and fill in:
+2. Create a `.env` file in the repo root and fill in:
 
    - `ADMIN_USER` / `ADMIN_PASSWORD` - first-boot admin
    - `POSTGRES_PASSWORD` - database password
@@ -58,8 +69,9 @@ container.
 
 4. Open the web app on the host:
 
-   - `https://localhost/` (Caddy will use its local CA; browsers warn the first
-     time, so accept the cert or trust Caddy's local root)
+   - `https://localhost/` (Apache serves the self-signed cert generated on
+     first boot — browsers will warn once; accept it, or replace the cert
+     pair in the `apache-certs` volume)
    - If you set `SC_PUBLIC_HOSTNAME`, open `https://<your-hostname>/`
 
 5. Sign in with `ADMIN_USER` / `ADMIN_PASSWORD`. Press **Start camera** on the
@@ -74,25 +86,107 @@ but not the public internet:
 - wg-easy admin: <http://127.0.0.1:51821> - log in with the password whose
   bcrypt hash you set in `WG_PASSWORD_HASH`
 
-When you SSH to the host you can forward that port or reach it over the VPN. Do
-not publish it to the public internet without an additional auth layer in
-front.
+The recommended way to reach it from your laptop is an **SSH tunnel** (or via
+the VPN once a client is configured — see below). Do not publish it to the
+public internet.
 
-## VPN access
+## VPN access (WireGuard)
 
-The wg-easy server publishes UDP port `51820`. Create a client in the wg-easy
-UI, scan or download the WireGuard config, import it into your WireGuard
-client, and connect. Connected peers can reach `postgres` and the web service
-by their service names on the internal network.
+Once `docker compose up -d` is running, UDP `1194` on the server speaks
+WireGuard. This is the only way to reach anything other than the web app from
+outside the LAN.
+
+### 1. Open the wg-easy admin UI from your laptop
+
+The admin UI is loopback-only, so you tunnel it over SSH the first time:
+
+```bash
+ssh -L 51821:127.0.0.1:51821 <user>@<server>
+```
+
+Then open <http://127.0.0.1:51821> in your local browser and log in with the
+password whose bcrypt hash you set as `WG_PASSWORD_HASH`.
+
+### 2. Create a client config
+
+In the wg-easy UI: **New Client** -> give it a name (e.g. `laptop`) -> it
+generates a config. You can either:
+
+- Scan the QR code with the mobile WireGuard app, or
+- Download the `.conf` file and import it on the desktop client.
+
+The generated config already points at `WG_HOST:WG_PORT` (so `<server>:1194/udp`
+with our defaults) and tunnels `0.0.0.0/0`, meaning **all** your client traffic
+is routed through the server while connected. If you only want LAN-style access
+without sending unrelated browser traffic through the VPN, edit
+`AllowedIPs = 10.8.0.0/24, <docker-bridge-subnet>` after import. Find the docker
+bridge subnet with:
+
+```bash
+docker network inspect sentinelcam_sentinelcam --format '{{(index .IPAM.Config 0).Subnet}}'
+```
+
+### 3. Install the WireGuard client on your device
+
+| OS              | Where to get it                                                          |
+|-----------------|--------------------------------------------------------------------------|
+| Windows         | <https://www.wireguard.com/install/> (official installer)                |
+| macOS           | App Store: "WireGuard" (by WireGuard Development Team) or `brew install wireguard-tools` |
+| iOS             | App Store: "WireGuard"                                                   |
+| Android         | Play Store: "WireGuard" (or F-Droid for the FOSS build)                  |
+| Linux (CLI)     | `sudo apt install wireguard` / `sudo dnf install wireguard-tools`        |
+| Linux (Network Manager) | `sudo apt install network-manager-wireguard` (Ubuntu)            |
+
+### 4. Import the config and connect
+
+- **Mobile**: open the WireGuard app -> tap **+** -> **Scan from QR code** -> hold
+  the camera over the QR code shown in wg-easy -> name the tunnel -> toggle it
+  on.
+- **Windows / macOS desktop app**: open WireGuard -> **Add Tunnel** ->
+  **Import tunnel(s) from file** -> select the downloaded `.conf` -> click
+  **Activate**.
+- **Linux CLI**: save the file as `/etc/wireguard/sentinelcam.conf`,
+  `sudo wg-quick up sentinelcam`. To disconnect: `sudo wg-quick down sentinelcam`.
+
+### 5. Verify the tunnel
+
+From the connected client:
+
+```bash
+# Should print the WireGuard server's tunnel-internal IP (default 10.8.0.1)
+curl -s http://10.8.0.1:51821 -o /dev/null -w "%{http_code}\n"
+
+# Reach the web app via the tunnel (no LAN exposure needed)
+curl -k https://<server>/healthz
+```
+
+If both respond, the VPN is up. The wg-easy admin UI is now reachable at
+<http://10.8.0.1:51821> as well — you no longer need the SSH tunnel for
+day-to-day use.
+
+### Reaching internal services via the VPN
+
+With `AllowedIPs = 0.0.0.0/0` (the default), all your client traffic exits via
+the server, so you can reach:
+
+- The web app on `https://<server>/` (same as without VPN)
+- The wg-easy admin UI on `http://10.8.0.1:51821`
+- The host's SSH on `<server>:22` (if your server allows SSH on the LAN)
+- Containers on the `sentinelcam` Docker bridge by their container IP (look up
+  with `docker network inspect sentinelcam_sentinelcam`). The `web` service
+  listens on port `3000` and `postgres` on port `5432`.
 
 ## TLS
 
-- Default: Caddy issues a self-signed cert from its built-in local CA. The trust
-  root lives at `/data/caddy/pki/authorities/local/root.crt` inside the `caddy`
-  container; import it into your devices to silence cert warnings.
-- Production: set `SC_PUBLIC_HOSTNAME` to a real DNS name pointing at the host,
-  plus `SC_TLS_EMAIL`. Caddy will provision a Let's Encrypt cert automatically
-  on first request.
+- Default: the Apache entrypoint generates a 10-year self-signed certificate
+  with `CN=<SC_PUBLIC_HOSTNAME>` + a SAN for `localhost` / `127.0.0.1`. The
+  cert lives in the `apache-certs` named Docker volume.
+- Production: drop your real `server.crt` and `server.key` into that volume
+  (e.g. via `docker compose cp` or by mounting the volume's path) and restart
+  Apache. The entrypoint only generates a cert when one is missing.
+- For Let's Encrypt: terminate ACME externally (e.g. `certbot`) and copy the
+  resulting cert + key into the volume. Apache itself does not run an ACME
+  client in this stack.
 
 ## Running tests
 
@@ -115,12 +209,14 @@ app/
   database.py  PostgreSQL pool + aiosqlite-compatible shim
   storage.py   local filesystem storage helpers
   main.py      FastAPI app + middleware
+apache/
+  Dockerfile   httpd:2.4-alpine + ssl/proxy/headers modules
+  entrypoint.sh self-signed cert generator
+  httpd-vhosts.conf  HTTPS reverse-proxy config
 static/
 templates/
-Caddyfile
 docker-compose.yml
 Dockerfile
-.env.example
 ```
 
 ## Environment variables
@@ -133,10 +229,10 @@ Dockerfile
 | `LOCKOUT_THRESHOLD` / `LOCKOUT_DURATION_MINUTES` | First-start user lockout defaults |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
 | `LOCAL_STORAGE_PATH` | Recording storage path inside the web container |
-| `SC_PUBLIC_HOSTNAME` | DNS name Caddy serves (default `sentinelcam.local`) |
-| `SC_TLS_EMAIL` | Let's Encrypt email (default `internal`) |
+| `SC_PUBLIC_HOSTNAME` | DNS name Apache serves; used for the self-signed cert CN/SAN (default `sentinelcam.local`) |
 | `WG_HOST` | Hostname/IP that VPN clients dial |
-| `WG_PORT` | WireGuard UDP port (default 51820) |
+| `WG_PORT` | WireGuard UDP port (default 1194) |
 | `WG_PASSWORD_HASH` | Bcrypt hash for the wg-easy admin UI |
 
-See `.env.example` for the full list with defaults.
+See the **Quick start** section above for the minimal set of variables you
+need to define in `.env`.
