@@ -112,11 +112,13 @@ from app.auth.routes import router as auth_router
 from app.dashboard.routes import router as dashboard_router
 from app.gallery.routes import router as gallery_router
 from app.recording.routes import router as recording_router
+from app.streaming.routes import router as streaming_router
 
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(gallery_router)
 app.include_router(recording_router)
+app.include_router(streaming_router)
 
 
 @app.get("/", response_class=HTMLResponse)

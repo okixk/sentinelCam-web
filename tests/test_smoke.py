@@ -27,6 +27,13 @@ class ModuleImportTests(unittest.TestCase):
             "app.dashboard.routes",
             "app.gallery.routes",
             "app.recording.routes",
+            "app.observability",
+            "app.streaming",
+            "app.streaming.hub",
+            "app.streaming.protocol",
+            "app.streaming.routes",
+            "app.streaming.tokens",
+            "app.streaming.worker_link",
             "app.main",
         ):
             importlib.import_module(module_name)
@@ -40,6 +47,11 @@ class ModuleImportTests(unittest.TestCase):
         self.assertIn("/gallery", paths)
         self.assertIn("/api/recordings/upload", paths)
         self.assertIn("/api/admin/security", paths)
+        self.assertIn("/api/admin/cameras", paths)
+        self.assertIn("/api/admin/workers", paths)
+        self.assertIn("/api/ingest/{cam_id}", paths)
+        self.assertIn("/api/worker/connect", paths)
+        self.assertIn("/api/cameras/{cam_id}/stream.mjpg", paths)
         self.assertIn("/admin", paths)
 
     def test_no_legacy_proxy_router(self) -> None:

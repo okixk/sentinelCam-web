@@ -84,6 +84,50 @@
     <div class="panel">
       <div class="panel-header">
         <div>
+          <h2>Cameras</h2>
+          <p class="small">Pi devices that push JPEG frames to the worker pipeline. Tokens are shown once.</p>
+        </div>
+      </div>
+      <div id="cameras-table" class="loading-state">Loading...</div>
+      <hr>
+      <h3>Issue camera token</h3>
+      <form id="create-camera-form">
+        <div class="field"><label>Camera name</label><input id="new-camera-name" autocomplete="off" required maxlength="80" /></div>
+        <button type="submit">Issue camera token</button>
+      </form>
+      <div id="new-camera-token" class="stack-note-card" hidden>
+        <strong>New camera token (copy now — it will not be shown again)</strong>
+        <div class="small">Camera <code id="new-camera-token-cam"></code>:</div>
+        <pre id="new-camera-token-value" class="token-output"></pre>
+        <button type="button" class="secondary" id="copy-camera-token-btn">Copy token</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Workers</h2>
+          <p class="small">Inference workers that connect outbound to the web server.</p>
+        </div>
+      </div>
+      <div id="workers-table" class="loading-state">Loading...</div>
+      <hr>
+      <h3>Issue worker token</h3>
+      <form id="create-worker-form">
+        <div class="field"><label>Worker name</label><input id="new-worker-name" autocomplete="off" required maxlength="80" /></div>
+        <button type="submit">Issue worker token</button>
+      </form>
+      <div id="new-worker-token" class="stack-note-card" hidden>
+        <strong>New worker token (copy now — it will not be shown again)</strong>
+        <div class="small">Worker <code id="new-worker-token-id"></code>:</div>
+        <pre id="new-worker-token-value" class="token-output"></pre>
+        <button type="button" class="secondary" id="copy-worker-token-btn">Copy token</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
           <h2>Stack</h2>
         </div>
       </div>
@@ -128,5 +172,5 @@
   </div>
 </div>
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260520a"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260520b"></script>
 {% endblock %}

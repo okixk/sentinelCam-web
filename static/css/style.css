@@ -1266,6 +1266,17 @@ button:disabled,
   color: #fca5a5;
 }
 
+.token-output {
+  word-break: break-all;
+  white-space: pre-wrap;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85em;
+  margin: 6px 0;
+}
+
 .loading-state {
   color: var(--muted);
 }

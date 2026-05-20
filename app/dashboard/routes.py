@@ -22,6 +22,16 @@ from app.observability import (
 from app.runtime_settings import apply_security_config, get_security_config, save_security_config
 from app.security import hash_password
 from app.security import login_rate_limiter
+from app.streaming import (
+    frame_hubs,
+    issue_camera_token,
+    issue_worker_token,
+    list_cameras,
+    list_workers,
+    revoke_camera,
+    revoke_worker,
+    worker_link,
+)
 from app.thumbnail_jobs import get_thumbnail_job_stats
 
 log = logging.getLogger("sentinelCam.dashboard")
@@ -311,22 +321,11 @@ async def _count_active_sessions() -> int:
             return -1
 
 
-def _worker_status_placeholder() -> dict[str, object]:
-    """Stub until the Pi -> web -> worker pipeline lands.
-
-    The status panel reserves a slot so admins know the feature exists and is
-    intentionally unconfigured, instead of silently omitting it.
-    """
-    return {
-        "configured": False,
-        "reason": "Worker integration not configured. Pipeline is pending design approval.",
-    }
-
-
 @router.get("/api/admin/ops")
 async def admin_ops(admin: User = Depends(require_admin)):
     db_status = await _measure_database()
     storage_path = settings.local_storage_path
+    worker_state = worker_link.status()
     return JSONResponse(
         {
             "uptime_seconds": process_uptime_seconds(),
@@ -341,7 +340,110 @@ async def admin_ops(admin: User = Depends(require_admin)):
             "sessions": {
                 "active": await _count_active_sessions(),
             },
-            "worker": _worker_status_placeholder(),
+            "worker": worker_state,
+            "hubs": frame_hubs.all_stats(),
             "errors": recent_errors(limit=50),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+#  Camera / worker token management (admin-only)
+# ---------------------------------------------------------------------------
+
+
+class CameraCreateRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 80:
+            raise ValueError("name must be 1-80 chars")
+        return value
+
+
+@router.get("/api/admin/cameras")
+async def admin_list_cameras(admin: User = Depends(require_admin)):
+    return JSONResponse({"items": await list_cameras()})
+
+
+@router.post("/api/admin/cameras", status_code=201)
+async def admin_create_camera(
+    body: CameraCreateRequest,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    try:
+        cam_id, token = await issue_camera_token(body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        if "UNIQUE" in str(exc) or "duplicate key" in str(exc).lower():
+            raise HTTPException(409, "Camera name already exists")
+        raise
+    _audit("admin.camera.create", admin=admin.username, camera_id=cam_id, name=body.name)
+    # The plaintext token is returned exactly once; the DB only stores the hash.
+    return JSONResponse({"ok": True, "id": cam_id, "token": token}, status_code=201)
+
+
+@router.delete("/api/admin/cameras/{cam_id}")
+async def admin_revoke_camera(
+    cam_id: int,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    removed = await revoke_camera(cam_id)
+    if not removed:
+        raise HTTPException(404, "Camera not found or already revoked")
+    _audit("admin.camera.revoke", admin=admin.username, camera_id=cam_id)
+    return JSONResponse({"ok": True})
+
+
+class WorkerCreateRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 80:
+            raise ValueError("name must be 1-80 chars")
+        return value
+
+
+@router.get("/api/admin/workers")
+async def admin_list_workers(admin: User = Depends(require_admin)):
+    return JSONResponse({"items": await list_workers(), "connection": worker_link.status()})
+
+
+@router.post("/api/admin/workers", status_code=201)
+async def admin_create_worker(
+    body: WorkerCreateRequest,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    try:
+        worker_id, token = await issue_worker_token(body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        if "UNIQUE" in str(exc) or "duplicate key" in str(exc).lower():
+            raise HTTPException(409, "Worker name already exists")
+        raise
+    _audit("admin.worker.create", admin=admin.username, worker_id=worker_id, name=body.name)
+    return JSONResponse({"ok": True, "id": worker_id, "token": token}, status_code=201)
+
+
+@router.delete("/api/admin/workers/{worker_id}")
+async def admin_revoke_worker(
+    worker_id: int,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    removed = await revoke_worker(worker_id)
+    if not removed:
+        raise HTTPException(404, "Worker not found or already revoked")
+    _audit("admin.worker.revoke", admin=admin.username, worker_id=worker_id)
+    return JSONResponse({"ok": True})

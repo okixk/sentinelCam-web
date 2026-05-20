@@ -601,9 +601,216 @@ function loadSystemInfo() {
   if (typeof initCopyButtons === "function") initCopyButtons();
 }
 
+async function loadCameras() {
+  const el = document.getElementById("cameras-table");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/admin/cameras", { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      el.innerHTML = '<p class="small">No cameras configured.</p>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table class="admin-table"><thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Last frame</th><th>Total frames</th><th>Action</th></tr></thead><tbody>';
+    for (const cam of items) {
+      const revoked = cam.revoked_at && cam.revoked_at > 0;
+      const status = revoked
+        ? `<span class="status-pill error">revoked</span>`
+        : (cam.last_frame_at
+            ? `<span class="status-pill ok">live</span>`
+            : `<span class="status-pill neutral">waiting</span>`);
+      html += `<tr>
+        <td>${cam.id}</td>
+        <td>${escHtml(cam.name)}</td>
+        <td>${status}</td>
+        <td>${cam.last_frame_at ? formatDate(cam.last_frame_at) : "-"}</td>
+        <td>${cam.total_frames || 0}</td>
+        <td>${revoked ? "-" : `<button class="danger admin-inline-button" data-action="revoke-camera" data-cam-id="${cam.id}">Revoke</button>`}</td>
+      </tr>`;
+    }
+    html += "</tbody></table></div>";
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = '<span class="small error">Failed to load cameras: ' + escHtml(err.message) + "</span>";
+  }
+}
+
+async function createCamera(event) {
+  event.preventDefault();
+  const input = document.getElementById("new-camera-name");
+  const name = (input?.value || "").trim();
+  if (!name) return;
+  try {
+    const resp = await fetch("/api/admin/cameras", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(payload.detail?.error || payload.detail || payload.error || ("HTTP " + resp.status));
+    }
+    document.getElementById("new-camera-token-cam").textContent = "#" + payload.id;
+    document.getElementById("new-camera-token-value").textContent = payload.token;
+    const wrap = document.getElementById("new-camera-token");
+    if (wrap) wrap.hidden = false;
+    input.value = "";
+    toast("Camera token issued.", { tone: "success", title: "Camera created" });
+    await loadCameras();
+  } catch (err) {
+    toast("Issue camera failed: " + err.message, { tone: "error", title: "Camera" });
+  }
+}
+
+async function revokeCamera(camId) {
+  const ok = await confirmDialog({
+    title: "Revoke camera token",
+    message: "The Pi will lose access immediately. Continue?",
+    confirmLabel: "Revoke",
+    cancelLabel: "Keep",
+    confirmTone: "danger",
+    tone: "danger",
+  });
+  if (!ok) return;
+  try {
+    const resp = await fetch("/api/admin/cameras/" + camId, {
+      method: "DELETE",
+      headers: { "X-CSRF-Token": getCsrf() },
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail?.error || data.detail || data.error || "HTTP " + resp.status);
+    }
+    toast("Camera revoked.", { tone: "success", title: "Camera" });
+    await loadCameras();
+  } catch (err) {
+    toast("Revoke failed: " + err.message, { tone: "error", title: "Camera" });
+  }
+}
+
+async function loadWorkers() {
+  const el = document.getElementById("workers-table");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/admin/workers", { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    const live = data.connection || {};
+    if (!items.length) {
+      el.innerHTML = '<p class="small">No workers configured.</p>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table class="admin-table"><thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Last seen</th><th>Action</th></tr></thead><tbody>';
+    for (const wrk of items) {
+      const revoked = wrk.revoked_at && wrk.revoked_at > 0;
+      const isLive = live.connected && live.worker_id === wrk.id;
+      const status = revoked
+        ? `<span class="status-pill error">revoked</span>`
+        : (isLive
+            ? `<span class="status-pill ok">online</span>`
+            : `<span class="status-pill neutral">offline</span>`);
+      html += `<tr>
+        <td>${wrk.id}</td>
+        <td>${escHtml(wrk.name)}</td>
+        <td>${status}</td>
+        <td>${wrk.last_seen_at ? formatDate(wrk.last_seen_at) : "-"}</td>
+        <td>${revoked ? "-" : `<button class="danger admin-inline-button" data-action="revoke-worker" data-worker-id="${wrk.id}">Revoke</button>`}</td>
+      </tr>`;
+    }
+    html += "</tbody></table></div>";
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = '<span class="small error">Failed to load workers: ' + escHtml(err.message) + "</span>";
+  }
+}
+
+async function createWorker(event) {
+  event.preventDefault();
+  const input = document.getElementById("new-worker-name");
+  const name = (input?.value || "").trim();
+  if (!name) return;
+  try {
+    const resp = await fetch("/api/admin/workers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(payload.detail?.error || payload.detail || payload.error || ("HTTP " + resp.status));
+    }
+    document.getElementById("new-worker-token-id").textContent = "#" + payload.id;
+    document.getElementById("new-worker-token-value").textContent = payload.token;
+    const wrap = document.getElementById("new-worker-token");
+    if (wrap) wrap.hidden = false;
+    input.value = "";
+    toast("Worker token issued.", { tone: "success", title: "Worker created" });
+    await loadWorkers();
+  } catch (err) {
+    toast("Issue worker failed: " + err.message, { tone: "error", title: "Worker" });
+  }
+}
+
+async function revokeWorker(workerId) {
+  const ok = await confirmDialog({
+    title: "Revoke worker token",
+    message: "The worker will lose access immediately. Continue?",
+    confirmLabel: "Revoke",
+    cancelLabel: "Keep",
+    confirmTone: "danger",
+    tone: "danger",
+  });
+  if (!ok) return;
+  try {
+    const resp = await fetch("/api/admin/workers/" + workerId, {
+      method: "DELETE",
+      headers: { "X-CSRF-Token": getCsrf() },
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail?.error || data.detail || data.error || "HTTP " + resp.status);
+    }
+    toast("Worker revoked.", { tone: "success", title: "Worker" });
+    await loadWorkers();
+  } catch (err) {
+    toast("Revoke failed: " + err.message, { tone: "error", title: "Worker" });
+  }
+}
+
+function attachCopyOnce(buttonId, sourceId) {
+  const btn = document.getElementById(buttonId);
+  const src = document.getElementById(sourceId);
+  if (!btn || !src) return;
+  btn.addEventListener("click", async () => {
+    const text = (src.textContent || "").trim();
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      btn.textContent = "Copied";
+      window.setTimeout(() => { btn.textContent = "Copy token"; }, 1500);
+    } catch (err) {
+      toast("Copy failed: " + err.message, { tone: "error", title: "Clipboard" });
+    }
+  });
+}
+
 loadUsers();
 loadSessions();
 loadSystemInfo();
+loadCameras();
+loadWorkers();
 loadOpsStatus({ force: true }).catch(() => {});
 loadSecurityStatus({ force: true }).catch(() => {});
 
@@ -617,10 +824,17 @@ document.addEventListener("click", event => {
   else if (action === "delete-user") deleteUser(parseInt(btn.dataset.userId, 10), btn.dataset.username);
   else if (action === "revoke-session") revokeSession(btn.dataset.sessionId);
   else if (action === "unblock-ip") unblockIp(btn.dataset.ip || "");
+  else if (action === "revoke-camera") revokeCamera(parseInt(btn.dataset.camId, 10));
+  else if (action === "revoke-worker") revokeWorker(parseInt(btn.dataset.workerId, 10));
 });
 
 document.getElementById("create-user-form").addEventListener("submit", createUser);
 document.getElementById("security-settings-form")?.addEventListener("submit", saveSecuritySettings);
+document.getElementById("create-camera-form")?.addEventListener("submit", createCamera);
+document.getElementById("create-worker-form")?.addEventListener("submit", createWorker);
+attachCopyOnce("copy-camera-token-btn", "new-camera-token-value");
+attachCopyOnce("copy-worker-token-btn", "new-worker-token-value");
+window.setInterval(() => { loadCameras(); loadWorkers(); }, 10_000);
 if (passwordResetForm) passwordResetForm.addEventListener("submit", submitPasswordReset);
 
 if (passwordResetModal) {

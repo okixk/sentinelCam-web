@@ -66,6 +66,27 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at DOUBLE PRECISION NOT NULL DEFAULT EXTRACT(EPOCH FROM clock_timestamp())
 );
 
+CREATE TABLE IF NOT EXISTS cameras (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL DEFAULT EXTRACT(EPOCH FROM clock_timestamp()),
+    revoked_at DOUBLE PRECISION,
+    last_frame_at DOUBLE PRECISION,
+    last_frame_size_bytes INTEGER NOT NULL DEFAULT 0,
+    total_frames BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS workers (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL DEFAULT EXTRACT(EPOCH FROM clock_timestamp()),
+    revoked_at DOUBLE PRECISION,
+    last_seen_at DOUBLE PRECISION,
+    last_status TEXT
+);
+
 ALTER TABLE recordings ADD COLUMN IF NOT EXISTS shared INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE recordings ADD COLUMN IF NOT EXISTS metadata TEXT;
 
@@ -73,6 +94,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_recordings_user_created ON recordings(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id);
+CREATE INDEX IF NOT EXISTS idx_cameras_active ON cameras(revoked_at) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workers_active ON workers(revoked_at) WHERE revoked_at IS NULL;
 """
 
 
