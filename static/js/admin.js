@@ -159,6 +159,17 @@ async function loadOpsStatus(options = {}) {
     const worker = data.worker || {};
     const errors = Array.isArray(data.errors) ? data.errors : [];
 
+    updateStatTile(
+      "stat-sessions-value",
+      sessions.active != null ? String(sessions.active) : "—",
+      sessions.active === 0 ? "neutral" : "ok"
+    );
+    updateStatTile(
+      "stat-errors-value",
+      String(errors.length),
+      errors.length === 0 ? "ok" : (errors.length < 5 ? "warn" : "error")
+    );
+
     const dbBadge = database.ok
       ? `<span class="status-pill ok">OK · ${database.latency_ms ?? "?"} ms</span>`
       : `<span class="status-pill error">DOWN</span>`;
@@ -601,6 +612,14 @@ function loadSystemInfo() {
   if (typeof initCopyButtons === "function") initCopyButtons();
 }
 
+function updateStatTile(id, value, state) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = value;
+  const wrap = el.closest(".admin-stat");
+  if (wrap && state) wrap.dataset.state = state;
+}
+
 async function loadCameras() {
   const el = document.getElementById("cameras-table");
   if (!el) return;
@@ -609,6 +628,15 @@ async function loadCameras() {
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.json();
     const items = Array.isArray(data.items) ? data.items : [];
+
+    const nowSec = Date.now() / 1000;
+    const active = items.filter(c => !(c.revoked_at && c.revoked_at > 0));
+    const live = active.filter(c => c.last_frame_at && (nowSec - c.last_frame_at) < 30);
+    updateStatTile(
+      "stat-cameras-value",
+      active.length ? `${live.length} / ${active.length}` : "0",
+      active.length && live.length ? "ok" : (active.length ? "warn" : "neutral")
+    );
     if (!items.length) {
       el.innerHTML = '<p class="small">No cameras configured.</p>';
       return;
@@ -699,6 +727,13 @@ async function loadWorkers() {
     const data = await resp.json();
     const items = Array.isArray(data.items) ? data.items : [];
     const live = data.connection || {};
+    const active = items.filter(w => !(w.revoked_at && w.revoked_at > 0));
+    const online = active.filter(w => live.connected && live.worker_id === w.id).length;
+    updateStatTile(
+      "stat-workers-value",
+      active.length ? `${online} / ${active.length}` : "0",
+      active.length && online ? "ok" : (active.length ? "warn" : "neutral")
+    );
     if (!items.length) {
       el.innerHTML = '<p class="small">No workers configured.</p>';
       return;

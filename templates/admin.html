@@ -1,86 +1,59 @@
 {% extends "base.html" %}
 {% block title %}Admin – sentinelCam{% endblock %}
 {% block content %}
-<div class="page">
-  <section class="page-hero">
-    <div class="page-title-group">
+<div class="page page-wide admin-page">
+  <header class="admin-page-header">
+    <div>
       <h1>Admin</h1>
+      <p class="admin-page-subtitle">Manage cameras, workers, users, and operations.</p>
     </div>
+  </header>
+
+  <!-- Status strip: at-a-glance counts for the four things admins care about. -->
+  <section class="admin-statstrip" id="admin-statstrip">
+    <a href="#section-devices" class="admin-stat" data-stat="cameras">
+      <span class="admin-stat-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h3l2-2h8l2 2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/></svg>
+      </span>
+      <span class="admin-stat-body">
+        <span class="admin-stat-value" id="stat-cameras-value">—</span>
+        <span class="admin-stat-label">Cameras live</span>
+      </span>
+    </a>
+    <a href="#section-devices" class="admin-stat" data-stat="workers">
+      <span class="admin-stat-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 18v3"/><path d="M8 11l2 2 4-4"/></svg>
+      </span>
+      <span class="admin-stat-body">
+        <span class="admin-stat-value" id="stat-workers-value">—</span>
+        <span class="admin-stat-label">Workers online</span>
+      </span>
+    </a>
+    <a href="#section-access" class="admin-stat" data-stat="sessions">
+      <span class="admin-stat-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </span>
+      <span class="admin-stat-body">
+        <span class="admin-stat-value" id="stat-sessions-value">—</span>
+        <span class="admin-stat-label">Active sessions</span>
+      </span>
+    </a>
+    <a href="#section-monitoring" class="admin-stat" data-stat="errors">
+      <span class="admin-stat-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+      </span>
+      <span class="admin-stat-body">
+        <span class="admin-stat-value" id="stat-errors-value">—</span>
+        <span class="admin-stat-label">Recent errors</span>
+      </span>
+    </a>
   </section>
 
+  <!-- ============================================
+       Devices: cameras, workers, auto-recording
+       ============================================ -->
+  <h2 class="admin-section-title" id="section-devices">Devices</h2>
   <div class="admin-grid">
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <h2>Users</h2>
-        </div>
-      </div>
-      <div id="users-table" class="loading-state">Loading...</div>
-      <hr>
-      <h3>Create user</h3>
-      <form id="create-user-form">
-        <div class="field"><label>Username</label><input id="new-username" autocomplete="username" required /></div>
-        <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" autocomplete="new-password" required /></div>
-        <div class="field">
-          <label>Role</label>
-          <select id="new-role">
-            <option value="viewer">Viewer</option>
-            <option value="admin">Admin</option>
-          </select>
-        </div>
-        <button type="submit">Create User</button>
-      </form>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <h2>Active sessions</h2>
-        </div>
-      </div>
-      <div id="sessions-table" class="loading-state">Loading...</div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <h2>Passkeys</h2>
-        </div>
-      </div>
-      <div id="passkeys-list" class="loading-state">Loading...</div>
-      <button id="register-passkey-btn" class="secondary" style="margin-top:12px;">Register new passkey</button>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <h2>Login security</h2>
-        </div>
-      </div>
-      <form id="security-settings-form" class="connection-form">
-        <div class="field">
-          <label for="security-login-rate-limit">Attempts per IP</label>
-          <input id="security-login-rate-limit" type="number" min="1" max="100" required />
-        </div>
-        <div class="field">
-          <label for="security-login-rate-window">IP window (minutes)</label>
-          <input id="security-login-rate-window" type="number" min="1" max="1440" required />
-        </div>
-        <div class="field">
-          <label for="security-lockout-threshold">Attempts per user</label>
-          <input id="security-lockout-threshold" type="number" min="1" max="100" required />
-        </div>
-        <div class="field">
-          <label for="security-lockout-duration">User lockout (minutes)</label>
-          <input id="security-lockout-duration" type="number" min="1" max="1440" required />
-        </div>
-        <button type="submit">Save security settings</button>
-      </form>
-      <hr>
-      <h3>Blocked IPs</h3>
-      <div id="blocked-ips-table" class="loading-state">Loading...</div>
-    </div>
-
     <div class="panel">
       <div class="panel-header">
         <div>
@@ -88,19 +61,22 @@
           <p class="small">Pi devices that push JPEG frames to the worker pipeline. Tokens are shown once.</p>
         </div>
       </div>
-      <div id="cameras-table" class="loading-state">Loading...</div>
-      <hr>
-      <h3>Issue camera token</h3>
-      <form id="create-camera-form">
-        <div class="field"><label>Camera name</label><input id="new-camera-name" autocomplete="off" required maxlength="80" /></div>
-        <button type="submit">Issue camera token</button>
-      </form>
-      <div id="new-camera-token" class="stack-note-card" hidden>
-        <strong>New camera token (copy now — it will not be shown again)</strong>
-        <div class="small">Camera <code id="new-camera-token-cam"></code>:</div>
-        <pre id="new-camera-token-value" class="token-output"></pre>
-        <button type="button" class="secondary" id="copy-camera-token-btn">Copy token</button>
-      </div>
+      <div id="cameras-table" class="loading-state">Loading…</div>
+      <details class="admin-inline-form">
+        <summary>Issue a new camera token</summary>
+        <form id="create-camera-form" class="admin-form-row">
+          <input id="new-camera-name" placeholder="Camera name (e.g. front-door)" autocomplete="off" required maxlength="80" />
+          <button type="submit">Issue</button>
+        </form>
+        <div id="new-camera-token" class="admin-token-card" hidden>
+          <div class="admin-token-card-head">
+            <strong>New camera token</strong>
+            <span class="small">Camera <code id="new-camera-token-cam"></code> · shown once</span>
+          </div>
+          <pre id="new-camera-token-value" class="token-output"></pre>
+          <button type="button" class="secondary" id="copy-camera-token-btn">Copy token</button>
+        </div>
+      </details>
     </div>
 
     <div class="panel">
@@ -110,75 +86,171 @@
           <p class="small">Inference workers that connect outbound to the web server.</p>
         </div>
       </div>
-      <div id="workers-table" class="loading-state">Loading...</div>
-      <hr>
-      <h3>Issue worker token</h3>
-      <form id="create-worker-form">
-        <div class="field"><label>Worker name</label><input id="new-worker-name" autocomplete="off" required maxlength="80" /></div>
-        <button type="submit">Issue worker token</button>
-      </form>
-      <div id="new-worker-token" class="stack-note-card" hidden>
-        <strong>New worker token (copy now — it will not be shown again)</strong>
-        <div class="small">Worker <code id="new-worker-token-id"></code>:</div>
-        <pre id="new-worker-token-value" class="token-output"></pre>
-        <button type="button" class="secondary" id="copy-worker-token-btn">Copy token</button>
-      </div>
+      <div id="workers-table" class="loading-state">Loading…</div>
+      <details class="admin-inline-form">
+        <summary>Issue a new worker token</summary>
+        <form id="create-worker-form" class="admin-form-row">
+          <input id="new-worker-name" placeholder="Worker name (e.g. lab-h200)" autocomplete="off" required maxlength="80" />
+          <button type="submit">Issue</button>
+        </form>
+        <div id="new-worker-token" class="admin-token-card" hidden>
+          <div class="admin-token-card-head">
+            <strong>New worker token</strong>
+            <span class="small">Worker <code id="new-worker-token-id"></code> · shown once</span>
+          </div>
+          <pre id="new-worker-token-value" class="token-output"></pre>
+          <button type="button" class="secondary" id="copy-worker-token-btn">Copy token</button>
+        </div>
+      </details>
     </div>
 
-    <div class="panel">
+    <div class="panel admin-panel-wide">
       <div class="panel-header">
         <div>
           <h2>Auto-recording</h2>
-          <p class="small">YOLO triggers a snapshot or short clip when a configured class is seen. Recordings owned by the first admin user and visible to admins only.</p>
+          <p class="small">YOLO triggers a snapshot or short clip when a configured class is seen. Auto recordings are owned by the first admin and visible to admins only.</p>
         </div>
       </div>
-      <form id="auto-capture-form" class="connection-form">
-        <div class="field">
+      <form id="auto-capture-form" class="admin-auto-form">
+        <div class="field admin-auto-toggle">
           <label class="checkbox-label">
             <input id="auto-capture-enabled" type="checkbox" />
             <span>Enable automatic recording</span>
           </label>
         </div>
-        <div class="field">
-          <label for="auto-capture-mode">Capture mode</label>
-          <select id="auto-capture-mode">
-            <option value="clip">Clip (MP4)</option>
-            <option value="snapshot">Snapshot (image)</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="auto-capture-duration">Clip duration</label>
-          <select id="auto-capture-duration">
-            <option value="10">10 s</option>
-            <option value="30">30 s</option>
-            <option value="60">60 s</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="auto-capture-cooldown">Cooldown (seconds, per camera)</label>
-          <input id="auto-capture-cooldown" type="number" min="1" max="3600" required />
+        <div class="admin-auto-grid">
+          <div class="field">
+            <label for="auto-capture-mode">Capture mode</label>
+            <select id="auto-capture-mode">
+              <option value="clip">Clip (MP4)</option>
+              <option value="snapshot">Snapshot (image)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="auto-capture-duration">Clip duration</label>
+            <select id="auto-capture-duration">
+              <option value="10">10 s</option>
+              <option value="30">30 s</option>
+              <option value="60">60 s</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="auto-capture-cooldown">Cooldown (s, per camera)</label>
+            <input id="auto-capture-cooldown" type="number" min="1" max="3600" required />
+          </div>
         </div>
         <div class="field">
           <label for="auto-capture-classes">Trigger classes</label>
-          <select id="auto-capture-classes" multiple size="10" aria-describedby="auto-capture-classes-help"></select>
+          <select id="auto-capture-classes" multiple size="8" aria-describedby="auto-capture-classes-help"></select>
           <p id="auto-capture-classes-help" class="small">Hold Ctrl/Cmd to select multiple. List is the COCO-80 set the worker can detect.</p>
         </div>
         <button type="submit">Save auto-recording settings</button>
       </form>
-      <hr>
-      <h3>Test trigger</h3>
-      <p class="small">Manually fire a capture so you can verify wiring without waiting for a real detection. Bypasses the cooldown.</p>
-      <form id="auto-capture-test-form" class="connection-form">
-        <div class="field">
-          <label for="auto-capture-test-camera">Camera ID</label>
-          <input id="auto-capture-test-camera" type="number" min="1" required />
+      <details class="admin-inline-form">
+        <summary>Fire test capture (bypasses cooldown)</summary>
+        <form id="auto-capture-test-form" class="admin-form-row">
+          <input id="auto-capture-test-camera" type="number" min="1" placeholder="Camera ID" required />
+          <input id="auto-capture-test-trigger" type="text" placeholder="Class" value="person" maxlength="64" required />
+          <button type="submit">Fire</button>
+        </form>
+      </details>
+    </div>
+  </div>
+
+  <!-- ============================================
+       People & access
+       ============================================ -->
+  <h2 class="admin-section-title" id="section-access">People &amp; access</h2>
+  <div class="admin-grid">
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Users</h2>
         </div>
-        <div class="field">
-          <label for="auto-capture-test-trigger">Trigger class</label>
-          <input id="auto-capture-test-trigger" type="text" value="person" maxlength="64" required />
+      </div>
+      <div id="users-table" class="loading-state">Loading…</div>
+      <details class="admin-inline-form">
+        <summary>Create new user</summary>
+        <form id="create-user-form">
+          <div class="field"><label>Username</label><input id="new-username" autocomplete="username" required /></div>
+          <div class="field"><label>Password (min 12 chars)</label><input id="new-password" type="password" autocomplete="new-password" required /></div>
+          <div class="field">
+            <label>Role</label>
+            <select id="new-role">
+              <option value="viewer">Viewer</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <button type="submit">Create user</button>
+        </form>
+      </details>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Active sessions</h2>
         </div>
-        <button type="submit">Fire test capture</button>
+      </div>
+      <div id="sessions-table" class="loading-state">Loading…</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Passkeys</h2>
+          <p class="small">Manage WebAuthn credentials for password-less sign-in.</p>
+        </div>
+      </div>
+      <div id="passkeys-list" class="loading-state">Loading…</div>
+      <button id="register-passkey-btn" class="secondary admin-passkey-btn">Register new passkey</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Login security</h2>
+        </div>
+      </div>
+      <form id="security-settings-form" class="admin-security-form">
+        <div class="admin-security-grid">
+          <div class="field">
+            <label for="security-login-rate-limit">Attempts / IP</label>
+            <input id="security-login-rate-limit" type="number" min="1" max="100" required />
+          </div>
+          <div class="field">
+            <label for="security-login-rate-window">IP window (min)</label>
+            <input id="security-login-rate-window" type="number" min="1" max="1440" required />
+          </div>
+          <div class="field">
+            <label for="security-lockout-threshold">Attempts / user</label>
+            <input id="security-lockout-threshold" type="number" min="1" max="100" required />
+          </div>
+          <div class="field">
+            <label for="security-lockout-duration">User lockout (min)</label>
+            <input id="security-lockout-duration" type="number" min="1" max="1440" required />
+          </div>
+        </div>
+        <button type="submit">Save security settings</button>
       </form>
+      <h3 class="admin-subheading">Blocked IPs</h3>
+      <div id="blocked-ips-table" class="loading-state">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ============================================
+       Monitoring
+       ============================================ -->
+  <h2 class="admin-section-title" id="section-monitoring">Monitoring</h2>
+  <div class="admin-grid">
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Operations</h2>
+          <p class="small">Live process, database, storage and worker state.</p>
+        </div>
+      </div>
+      <div id="ops-status" class="stack-notes loading-state">Loading…</div>
     </div>
 
     <div class="panel">
@@ -187,19 +259,11 @@
           <h2>Stack</h2>
         </div>
       </div>
-      <div id="system-info" class="stack-notes loading-state">Loading...</div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <h2>Operations</h2>
-        </div>
-      </div>
-      <div id="ops-status" class="stack-notes loading-state">Loading...</div>
+      <div id="system-info" class="stack-notes loading-state">Loading…</div>
     </div>
   </div>
 </div>
+
 <div id="password-reset-modal" class="modal-backdrop" hidden aria-hidden="true">
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="password-reset-title">
     <div class="modal-head">
@@ -230,5 +294,5 @@
 {% endblock %}
 {% block scripts %}
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260521b"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/admin.js?v=20260521c"></script>
 {% endblock %}

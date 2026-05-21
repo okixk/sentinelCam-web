@@ -1,46 +1,73 @@
 {% extends "base.html" %}
 {% block title %}Gallery – sentinelCam{% endblock %}
 {% block content %}
-<div class="page">
-  <section class="page-hero">
-    <div class="page-title-group">
+<div class="page page-wide gallery-page">
+  <header class="gallery-page-header">
+    <div class="gallery-page-title">
       <h1>Gallery</h1>
+      <p id="gallery-summary" class="gallery-summary">Loading…</p>
+    </div>
+    <button id="refresh-gallery" type="button" class="gallery-icon-btn" aria-label="Refresh gallery" title="Refresh">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 0 1-15.5 6.36L3 16"/>
+        <path d="M3 12a9 9 0 0 1 15.5-6.36L21 8"/>
+        <path d="M21 4v4h-4"/>
+        <path d="M3 20v-4h4"/>
+      </svg>
+    </button>
+  </header>
+
+  <section class="gallery-toolbar">
+    <div class="gallery-search">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="gallery-search-icon">
+        <circle cx="11" cy="11" r="7"/>
+        <path d="M21 21l-4.3-4.3"/>
+      </svg>
+      <input id="search-filter" type="search" placeholder="Search id, owner, filename, description…" autocomplete="off" />
+    </div>
+
+    <div class="gallery-toolbar-right">
+      <div class="gallery-segment" role="group" aria-label="Media type filter">
+        <button type="button" class="gallery-segment-btn is-active" data-type-value="">All</button>
+        <button type="button" class="gallery-segment-btn" data-type-value="image">Images</button>
+        <button type="button" class="gallery-segment-btn" data-type-value="video">Videos</button>
+      </div>
+      <select id="type-filter" hidden tabindex="-1" aria-hidden="true">
+        <option value="" selected>All media</option>
+        <option value="image">Images</option>
+        <option value="video">Videos</option>
+      </select>
+
+      <div class="gallery-segment" role="group" aria-label="Sort order">
+        <button type="button" class="gallery-segment-btn is-active" data-sort-value="newest" title="Newest first">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12l7 7 7-7"/></svg>
+          <span>Newest</span>
+        </button>
+        <button type="button" class="gallery-segment-btn" data-sort-value="oldest" title="Oldest first">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+          <span>Oldest</span>
+        </button>
+      </div>
+      <select id="sort-filter" hidden tabindex="-1" aria-hidden="true">
+        <option value="newest" selected>Newest first</option>
+        <option value="oldest">Oldest first</option>
+      </select>
     </div>
   </section>
 
-  <section class="panel gallery-controls">
-    <div class="filter-bar">
-      <div class="filter-inputs">
-        <input id="search-filter" type="search" placeholder="Search by id, owner, type, filename" autocomplete="off" />
-        <select id="type-filter">
-          <option value="">All media</option>
-          <option value="image">Images</option>
-          <option value="video">Videos</option>
-        </select>
-        <select id="sort-filter">
-          <option value="newest">Newest first</option>
-          <option value="oldest">Oldest first</option>
-        </select>
-      </div>
-      <div class="gallery-toolbar-actions">
-        <button id="refresh-gallery" type="button" class="secondary">Refresh</button>
-      </div>
-    </div>
-    <div class="gallery-preset-row">
-      <button type="button" class="secondary" data-preset="shared">Only shared</button>
-      <button type="button" class="secondary" data-preset="mine">Only mine</button>
-      <button type="button" class="secondary" data-preset="videos">Only videos</button>
-      {% if user.role == 'admin' %}
-      <button type="button" class="secondary" data-preset="auto">Only automatic</button>
-      {% endif %}
-    </div>
-    <div id="gallery-summary" class="gallery-summary">Loading...</div>
-  </section>
+  <div class="gallery-preset-row" role="group" aria-label="Quick filters">
+    <button type="button" class="gallery-chip" data-preset="mine">Only mine</button>
+    <button type="button" class="gallery-chip" data-preset="shared">Only shared</button>
+    <button type="button" class="gallery-chip" data-preset="videos">Only videos</button>
+    {% if user.role == 'admin' %}
+    <button type="button" class="gallery-chip" data-preset="auto">Only automatic</button>
+    {% endif %}
+  </div>
 
   <div id="gallery-grid" class="gallery-grid"></div>
   <div id="pagination" class="pagination"></div>
 </div>
 {% endblock %}
 {% block scripts %}
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js?v=20260521a"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js?v=20260521b"></script>
 {% endblock %}
