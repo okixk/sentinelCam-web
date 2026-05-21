@@ -1,74 +1,140 @@
 {% extends "base.html" %}
 {% block title %}Live – sentinelCam{% endblock %}
 {% block content %}
-<div class="page page-wide">
-  <section class="page-hero">
-    <div class="page-title-group">
-      <h1>Live stream</h1>
-      <p class="small">WebRTC by default, MJPEG fallback if the browser cannot negotiate.</p>
-    </div>
-    <div class="hero-side">
-      <div id="viewerStatusBadge" class="status-badge" data-state="connecting">
-        <span class="status-dot"></span>
-        <span id="viewerStatusText">Loading cameras</span>
-      </div>
-    </div>
-  </section>
+<div class="page page-wide live-page">
+  <header class="live-header">
+    <h1 class="live-title">Live</h1>
+    <button type="button" class="ghost live-fullscreen-btn" id="viewerFullscreenBtn" aria-label="Toggle fullscreen" title="Fullscreen (F)">
+      <span aria-hidden="true">⛶</span>
+    </button>
+  </header>
 
-  <div class="stream-layout">
-    <section class="panel stream-panel stream-stage">
-      <div class="panel-header">
-        <div>
-          <h2>Camera</h2>
-        </div>
-        <div class="detail-view-controls">
-          <select id="viewerCameraSelect" aria-label="Camera"></select>
-          <select id="viewerTransport" aria-label="Transport">
-            <option value="auto">Auto (WebRTC, MJPEG fallback)</option>
+  <section class="live-stage" id="viewer-container" aria-label="Live camera view">
+    <!-- Top HUD: camera picker + status pill + settings menu -->
+    <div class="live-hud live-hud-top">
+      <div class="live-camera-picker" id="liveCameraPicker">
+        <button type="button" class="live-camera-button" id="liveCameraButton"
+                aria-haspopup="menu" aria-expanded="false" aria-controls="liveCameraMenu" disabled>
+          <span class="live-camera-name" id="liveCameraName">No cameras</span>
+          <span class="live-camera-caret" aria-hidden="true">▾</span>
+        </button>
+        <ul class="live-camera-menu" id="liveCameraMenu" role="menu" hidden></ul>
+        <!-- Hidden state holder consumed by viewer.js (kept for continuity). -->
+        <select id="viewerCameraSelect" hidden tabindex="-1" aria-hidden="true"></select>
+      </div>
+
+      <div class="live-hud-actions">
+        <span class="live-status-pill" id="viewerStatusBadge" data-state="connecting">
+          <span class="live-status-dot"></span>
+          <span class="live-status-text" id="viewerStatusText">Loading…</span>
+        </span>
+
+        <div class="live-settings" id="liveSettings">
+          <button type="button" class="live-settings-button" id="liveSettingsButton"
+                  aria-haspopup="menu" aria-expanded="false" aria-controls="liveSettingsMenu"
+                  aria-label="Stream settings" title="Settings">
+            <span aria-hidden="true">⚙</span>
+          </button>
+          <div class="live-settings-menu" id="liveSettingsMenu" role="menu" hidden>
+            <div class="live-menu-section" role="group" aria-label="Transport mode">
+              <p class="live-menu-label">Transport</p>
+              <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="auto" checked> Auto · WebRTC, MJPEG fallback</label>
+              <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="webrtc"> WebRTC only</label>
+              <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="mjpeg"> MJPEG only</label>
+            </div>
+            <div class="live-menu-divider"></div>
+            <button type="button" class="live-menu-button" id="viewerReconnectBtn">Reconnect now</button>
+          </div>
+          <select id="viewerTransport" hidden tabindex="-1" aria-hidden="true">
+            <option value="auto" selected>Auto</option>
             <option value="webrtc">WebRTC only</option>
             <option value="mjpeg">MJPEG only</option>
           </select>
-          <button id="viewerReconnectBtn" class="secondary" type="button">Reconnect</button>
         </div>
       </div>
-      <div class="viewer" id="viewer-container">
-        <div id="viewerPlaceholder" class="stream-placeholder">Waiting for camera...</div>
-        <video id="viewer-video" class="stream-media" autoplay playsinline muted aria-label="Remote camera"></video>
-        <img id="viewer-mjpeg" class="stream-media" alt="MJPEG fallback" hidden />
-        <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
-      </div>
-      <div class="stream-toolbar">
-        <div class="stream-actions">
-          <button id="viewerSnapshotBtn" type="button" disabled>Snapshot</button>
-          <select id="viewerClipDuration" aria-label="Clip duration">
-            <option value="10">10 s</option>
-            <option value="30" selected>30 s</option>
-            <option value="60">60 s</option>
-          </select>
-          <button id="viewerClipBtn" type="button" disabled>Record clip</button>
-        </div>
-      </div>
-      <div class="status-strip">
-        <div id="viewer-status" role="status" aria-live="polite">Looking for cameras...</div>
-      </div>
-    </section>
+    </div>
 
-    <aside class="sidebar-stack">
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Passkeys</h2>
-            <p class="small">Sign in without a password from this device.</p>
-          </div>
-        </div>
-        <div id="passkeys-list" class="inline-list">Loading...</div>
-        <button id="register-passkey-btn" class="secondary">Register new passkey</button>
-      </section>
-    </aside>
-  </div>
+    <!-- Video stage -->
+    <div id="viewerPlaceholder" class="live-placeholder">
+      <div class="live-placeholder-icon" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="56" height="56" role="img" aria-label="">
+          <circle cx="32" cy="32" r="26" fill="none" stroke="currentColor" stroke-width="2" opacity="0.4"/>
+          <circle cx="32" cy="32" r="18" fill="none" stroke="currentColor" stroke-width="2" opacity="0.6"/>
+          <circle cx="32" cy="32" r="6" fill="currentColor"/>
+        </svg>
+      </div>
+      <div class="live-placeholder-text" id="viewerPlaceholderText">Waiting for camera…</div>
+      <div class="live-placeholder-hint" id="viewerPlaceholderHint"></div>
+    </div>
+    <video id="viewer-video" class="live-media" autoplay playsinline muted aria-label="Remote camera"></video>
+    <img id="viewer-mjpeg" class="live-media" alt="MJPEG fallback" hidden />
+    <img src="/static/branding/sentinelCam.png" class="live-watermark" alt="" aria-hidden="true" />
+
+    <!-- Bottom HUD: camera name, clock, transport tag -->
+    <div class="live-hud live-hud-bottom">
+      <div class="live-hud-info">
+        <span class="live-hud-camera" id="liveHudCamera"></span>
+        <span class="live-hud-clock" id="liveHudClock">--:--:--</span>
+      </div>
+      <span class="live-hud-mode" id="liveHudMode" hidden></span>
+    </div>
+  </section>
+
+  <!-- Action bar: snapshot / record / clip duration / live status text -->
+  <section class="live-actions">
+    <button type="button" id="viewerSnapshotBtn" class="live-action live-action-primary" disabled
+            title="Save a snapshot (S)">
+      <span class="live-action-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="13" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 9h3l1.5-2h5L16 9h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      </span>
+      <span class="live-action-label">Snapshot</span>
+      <kbd class="live-action-kbd" aria-hidden="true">S</kbd>
+    </button>
+
+    <button type="button" id="viewerClipBtn" class="live-action live-action-record" disabled
+            title="Record a clip (R)">
+      <span class="live-action-record-ring" aria-hidden="true">
+        <svg viewBox="0 0 36 36" class="live-action-progress">
+          <circle class="live-action-progress-bg" cx="18" cy="18" r="15.5" />
+          <circle class="live-action-progress-bar" cx="18" cy="18" r="15.5" />
+        </svg>
+        <span class="live-action-record-dot"></span>
+      </span>
+      <span class="live-action-label" id="viewerClipBtnLabel">Record clip</span>
+      <kbd class="live-action-kbd" aria-hidden="true">R</kbd>
+    </button>
+
+    <div class="live-clip-duration" role="group" aria-label="Clip duration">
+      <button type="button" class="live-clip-duration-btn" data-clip-duration="10">10s</button>
+      <button type="button" class="live-clip-duration-btn is-active" data-clip-duration="30" aria-pressed="true">30s</button>
+      <button type="button" class="live-clip-duration-btn" data-clip-duration="60">60s</button>
+    </div>
+    <select id="viewerClipDuration" hidden tabindex="-1" aria-hidden="true">
+      <option value="10">10</option>
+      <option value="30" selected>30</option>
+      <option value="60">60</option>
+    </select>
+
+    <div class="live-status-text-row" id="viewer-status" role="status" aria-live="polite"></div>
+  </section>
+
+  <!-- Account / passkeys: collapsed by default — most users open it once -->
+  <details class="live-account">
+    <summary>
+      <span class="live-account-summary-text">
+        <span class="live-account-summary-title">Account &amp; passkeys</span>
+        <span class="live-account-summary-hint">Manage passkeys for password-less sign-in on this device.</span>
+      </span>
+      <span class="live-account-caret" aria-hidden="true">▾</span>
+    </summary>
+    <div class="live-account-body">
+      <div id="passkeys-list" class="inline-list">Loading…</div>
+      <button id="register-passkey-btn" class="secondary">Register new passkey</button>
+    </div>
+  </details>
 </div>
 {% endblock %}
 {% block scripts %}
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/viewer.js?v=20260521b"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/viewer.js?v=20260521c"></script>
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
 {% endblock %}
