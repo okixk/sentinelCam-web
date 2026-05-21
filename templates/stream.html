@@ -37,6 +37,17 @@
         <img id="viewer-mjpeg" class="stream-media" alt="MJPEG fallback" hidden />
         <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
       </div>
+      <div class="stream-toolbar">
+        <div class="stream-actions">
+          <button id="viewerSnapshotBtn" type="button" disabled>Snapshot</button>
+          <select id="viewerClipDuration" aria-label="Clip duration">
+            <option value="10">10 s</option>
+            <option value="30" selected>30 s</option>
+            <option value="60">60 s</option>
+          </select>
+          <button id="viewerClipBtn" type="button" disabled>Record clip</button>
+        </div>
+      </div>
       <div class="status-strip">
         <div id="viewer-status" role="status" aria-live="polite">Looking for cameras...</div>
       </div>
@@ -58,6 +69,6 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/viewer.js?v=20260521a"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/viewer.js?v=20260521b"></script>
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
 {% endblock %}

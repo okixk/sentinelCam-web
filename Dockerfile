@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && \
     apt-get upgrade -y --no-install-recommends && \
-    apt-get install -y --no-install-recommends libglib2.0-0 && \
+    apt-get install -y --no-install-recommends libglib2.0-0 ffmpeg && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd -g 1000 sentinelcam && \

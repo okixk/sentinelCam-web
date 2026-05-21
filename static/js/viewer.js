@@ -18,8 +18,14 @@
     status: document.getElementById("viewer-status"),
     badge: document.getElementById("viewerStatusBadge"),
     badgeText: document.getElementById("viewerStatusText"),
+    snapshotBtn: document.getElementById("viewerSnapshotBtn"),
+    clipBtn: document.getElementById("viewerClipBtn"),
+    clipDuration: document.getElementById("viewerClipDuration"),
   };
   if (!els.video || !els.mjpeg || !els.select) return;
+
+  const appUI = window.AppUI || {};
+  const toast = typeof appUI.toast === "function" ? appUI.toast : () => null;
 
   let currentPc = null;
   let currentCameraId = null;
@@ -174,9 +180,11 @@
     if (!camId) {
       showPlaceholder("No camera selected.");
       setStatus("No camera selected.", "neutral");
+      setCaptureEnabled(false);
       return;
     }
     currentCameraId = camId;
+    setCaptureEnabled(true);
     const mode = els.transport?.value || "auto";
     setStatus("Connecting...", "connecting");
     closeMjpeg();
@@ -222,6 +230,64 @@
       setStatus("Failed to load cameras: " + err.message, "error");
     }
   }
+
+  function setCaptureEnabled(enabled) {
+    if (els.snapshotBtn) els.snapshotBtn.disabled = !enabled;
+    if (els.clipBtn) els.clipBtn.disabled = !enabled;
+  }
+
+  async function doSnapshot() {
+    if (!currentCameraId || !els.snapshotBtn) return;
+    els.snapshotBtn.disabled = true;
+    const originalLabel = els.snapshotBtn.textContent;
+    els.snapshotBtn.textContent = "Saving…";
+    try {
+      const resp = await fetch(`/api/cameras/${currentCameraId}/snapshot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
+        body: JSON.stringify({}),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail?.error || data.detail || data.error || ("HTTP " + resp.status));
+      }
+      toast(`Saved snapshot #${data.id}.`, { tone: "success", title: "Snapshot" });
+    } catch (err) {
+      toast("Snapshot failed: " + err.message, { tone: "error", title: "Snapshot failed" });
+    } finally {
+      els.snapshotBtn.textContent = originalLabel;
+      els.snapshotBtn.disabled = !currentCameraId;
+    }
+  }
+
+  async function doClip() {
+    if (!currentCameraId || !els.clipBtn) return;
+    const duration = parseInt(els.clipDuration?.value || "10", 10) || 10;
+    els.clipBtn.disabled = true;
+    if (els.snapshotBtn) els.snapshotBtn.disabled = true;
+    const originalLabel = els.clipBtn.textContent;
+    els.clipBtn.textContent = `Recording ${duration}s…`;
+    try {
+      const resp = await fetch(`/api/cameras/${currentCameraId}/clip`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
+        body: JSON.stringify({ duration_s: duration }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail?.error || data.detail || data.error || ("HTTP " + resp.status));
+      }
+      toast(`Saved clip #${data.id} (${duration}s).`, { tone: "success", title: "Clip recorded" });
+    } catch (err) {
+      toast("Clip failed: " + err.message, { tone: "error", title: "Clip failed" });
+    } finally {
+      els.clipBtn.textContent = originalLabel;
+      setCaptureEnabled(!!currentCameraId);
+    }
+  }
+
+  els.snapshotBtn?.addEventListener("click", doSnapshot);
+  els.clipBtn?.addEventListener("click", doClip);
 
   els.select.addEventListener("change", () => {
     const camId = parseInt(els.select.value, 10);

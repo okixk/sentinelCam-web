@@ -13,6 +13,11 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import User, check_csrf, get_current_user
 from app.database import get_db
+from app.recording.live_capture import (
+    ALLOWED_CLIP_DURATIONS,
+    record_clip_from_hub,
+    snapshot_from_hub,
+)
 from app.streaming import webrtc
 from app.streaming.hub import frame_hubs
 from app.streaming.protocol import (
@@ -308,6 +313,66 @@ class _WebRTCOffer(BaseModel):
         if value != "offer":
             raise ValueError("type must be 'offer'")
         return value
+
+
+# ---------------------------------------------------------------------------
+#  Manual snapshot / clip recording from the live stream
+# ---------------------------------------------------------------------------
+
+class _SnapshotBody(BaseModel):
+    description: str = ""
+
+    @field_validator("description")
+    @classmethod
+    def _trim(cls, value: str) -> str:
+        return (value or "").strip()[:1000]
+
+
+class _ClipBody(BaseModel):
+    duration_s: int
+    description: str = ""
+
+    @field_validator("duration_s")
+    @classmethod
+    def _check_duration(cls, value: int) -> int:
+        if value not in ALLOWED_CLIP_DURATIONS:
+            raise ValueError(f"duration_s must be one of {ALLOWED_CLIP_DURATIONS}")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def _trim(cls, value: str) -> str:
+        return (value or "").strip()[:1000]
+
+
+@router.post("/api/cameras/{cam_id}/snapshot", status_code=201)
+async def camera_snapshot(
+    cam_id: int,
+    body: _SnapshotBody,
+    user: User = Depends(get_current_user),
+    _csrf=Depends(check_csrf),
+):
+    hub = frame_hubs.get(cam_id)
+    if hub is None:
+        raise HTTPException(404, "Camera offline")
+    recording_id = await snapshot_from_hub(hub, user.id, description=body.description)
+    return JSONResponse({"ok": True, "id": recording_id}, status_code=201)
+
+
+@router.post("/api/cameras/{cam_id}/clip", status_code=201)
+async def camera_clip(
+    cam_id: int,
+    body: _ClipBody,
+    user: User = Depends(get_current_user),
+    _csrf=Depends(check_csrf),
+):
+    hub = frame_hubs.get(cam_id)
+    if hub is None:
+        raise HTTPException(404, "Camera offline")
+    recording_id = await record_clip_from_hub(
+        hub, user.id, body.duration_s, description=body.description
+    )
+    return JSONResponse({"ok": True, "id": recording_id}, status_code=201)
 
 
 @router.post("/api/cameras/{cam_id}/webrtc/offer")

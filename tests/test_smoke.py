@@ -55,6 +55,8 @@ class ModuleImportTests(unittest.TestCase):
         self.assertIn("/api/cameras", paths)
         self.assertIn("/api/cameras/{cam_id}/stream.mjpg", paths)
         self.assertIn("/api/cameras/{cam_id}/webrtc/offer", paths)
+        self.assertIn("/api/cameras/{cam_id}/snapshot", paths)
+        self.assertIn("/api/cameras/{cam_id}/clip", paths)
         self.assertIn("/admin", paths)
 
     def test_no_legacy_proxy_router(self) -> None:
