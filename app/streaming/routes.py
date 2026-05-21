@@ -8,9 +8,12 @@ import time
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, field_validator
 
-from app.auth.dependencies import User, get_current_user
+from app.auth.dependencies import User, check_csrf, get_current_user
+from app.database import get_db
+from app.streaming import webrtc
 from app.streaming.hub import frame_hubs
 from app.streaming.protocol import (
     HEADER_LEN,
@@ -248,3 +251,80 @@ async def camera_latest_frame(cam_id: int, user: User = Depends(get_current_user
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
+
+
+# ---------------------------------------------------------------------------
+#  Viewer-facing camera listing (no secrets)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/cameras")
+async def list_active_cameras(user: User = Depends(get_current_user)):
+    """Return the active cameras a viewer is allowed to subscribe to.
+
+    Strips token hashes; only id, name, last_frame_at, and a derived "live"
+    flag are returned. Admins still get the full picture via /api/admin/cameras.
+    """
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            "SELECT id, name, last_frame_at FROM cameras WHERE revoked_at IS NULL ORDER BY id"
+        )
+        rows = await cursor.fetchall()
+    items = []
+    for r in rows:
+        cam_id = int(r["id"])
+        hub = frame_hubs.get(cam_id)
+        has_frames = hub is not None and (hub.latest_processed()[0] is not None or hub.latest_raw()[0] is not None)
+        items.append(
+            {
+                "id": cam_id,
+                "name": r["name"],
+                "last_frame_at": r["last_frame_at"],
+                "live": bool(has_frames),
+            }
+        )
+    return JSONResponse({"items": items})
+
+
+# ---------------------------------------------------------------------------
+#  WebRTC viewer endpoint
+# ---------------------------------------------------------------------------
+
+class _WebRTCOffer(BaseModel):
+    sdp: str
+    type: str
+
+    @field_validator("sdp")
+    @classmethod
+    def _validate_sdp(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value or len(value) > 64 * 1024:
+            raise ValueError("invalid SDP")
+        return value
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, value: str) -> str:
+        value = (value or "").strip().lower()
+        if value != "offer":
+            raise ValueError("type must be 'offer'")
+        return value
+
+
+@router.post("/api/cameras/{cam_id}/webrtc/offer")
+async def camera_webrtc_offer(
+    cam_id: int,
+    body: _WebRTCOffer,
+    user: User = Depends(get_current_user),
+    _csrf=Depends(check_csrf),
+):
+    hub = frame_hubs.get(cam_id)
+    if hub is None:
+        raise HTTPException(404, "Camera offline")
+    try:
+        answer = await webrtc.handle_offer(hub, body.sdp, body.type)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except Exception:
+        log.exception("WebRTC negotiation failed for camera %d", cam_id)
+        raise HTTPException(400, "WebRTC negotiation failed")
+    return JSONResponse(answer)

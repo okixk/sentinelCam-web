@@ -33,6 +33,7 @@ class ModuleImportTests(unittest.TestCase):
             "app.streaming.protocol",
             "app.streaming.routes",
             "app.streaming.tokens",
+            "app.streaming.webrtc",
             "app.streaming.worker_link",
             "app.main",
         ):
@@ -51,7 +52,9 @@ class ModuleImportTests(unittest.TestCase):
         self.assertIn("/api/admin/workers", paths)
         self.assertIn("/api/ingest/{cam_id}", paths)
         self.assertIn("/api/worker/connect", paths)
+        self.assertIn("/api/cameras", paths)
         self.assertIn("/api/cameras/{cam_id}/stream.mjpg", paths)
+        self.assertIn("/api/cameras/{cam_id}/webrtc/offer", paths)
         self.assertIn("/admin", paths)
 
     def test_no_legacy_proxy_router(self) -> None:

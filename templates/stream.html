@@ -1,10 +1,49 @@
 {% extends "base.html" %}
-{% block title %}Capture – sentinelCam{% endblock %}
+{% block title %}Stream – sentinelCam{% endblock %}
 {% block content %}
 <div class="page page-wide">
   <section class="page-hero">
     <div class="page-title-group">
-      <h1>Live capture</h1>
+      <h1>Live stream</h1>
+    </div>
+    <div class="hero-side">
+      <div id="viewerStatusBadge" class="status-badge" data-state="connecting">
+        <span class="status-dot"></span>
+        <span id="viewerStatusText">Loading cameras</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel stream-panel stream-stage">
+    <div class="panel-header">
+      <div>
+        <h2>Camera</h2>
+        <p class="small">WebRTC by default, MJPEG fallback if the browser cannot negotiate.</p>
+      </div>
+      <div class="detail-view-controls">
+        <select id="viewerCameraSelect" aria-label="Camera"></select>
+        <select id="viewerTransport" aria-label="Transport">
+          <option value="auto">Auto (WebRTC, MJPEG fallback)</option>
+          <option value="webrtc">WebRTC only</option>
+          <option value="mjpeg">MJPEG only</option>
+        </select>
+        <button id="viewerReconnectBtn" class="secondary" type="button">Reconnect</button>
+      </div>
+    </div>
+    <div class="viewer" id="viewer-container">
+      <div id="viewerPlaceholder" class="stream-placeholder">Waiting for camera...</div>
+      <video id="viewer-video" class="stream-media" autoplay playsinline muted aria-label="Remote camera"></video>
+      <img id="viewer-mjpeg" class="stream-media" alt="MJPEG fallback" hidden />
+      <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
+    </div>
+    <div class="status-strip">
+      <div id="viewer-status" role="status" aria-live="polite">Looking for cameras...</div>
+    </div>
+  </section>
+
+  <section class="page-hero">
+    <div class="page-title-group">
+      <h2>Quick capture from this browser</h2>
     </div>
     <div class="hero-side">
       <div id="captureStatusBadge" class="status-badge" data-state="connecting">
@@ -83,6 +122,7 @@
     </aside>
   </div>
 </div>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/viewer.js?v=20260520c"></script>
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/capture.js?v=20260519b"></script>
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
 {% endblock %}

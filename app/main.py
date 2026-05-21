@@ -14,6 +14,7 @@ from app.database import close_pool, init_db
 from app.observability import install_error_capture
 from app.runtime_settings import load_and_apply_security_config
 from app.storage import ensure_storage
+from app.streaming import webrtc as _webrtc
 from app.thumbnail_jobs import shutdown_thumbnail_jobs
 
 
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await _webrtc.shutdown_all()
         await shutdown_thumbnail_jobs()
         await close_pool()
 
@@ -69,7 +71,8 @@ async def security_headers_middleware(request: Request, call_next):
             f"script-src 'self' 'nonce-{nonce}'; "
             f"style-src 'self' 'unsafe-inline'; "
             f"img-src 'self' blob: data:; "
-            f"media-src 'self' blob:; "
+            # mediasource srcObject for WebRTC needs 'mediastream:' too.
+            f"media-src 'self' blob: mediastream:; "
             f"connect-src 'self'; "
             f"object-src 'none'; "
             f"frame-ancestors 'none'; "

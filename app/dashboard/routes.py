@@ -326,6 +326,7 @@ async def admin_ops(admin: User = Depends(require_admin)):
     db_status = await _measure_database()
     storage_path = settings.local_storage_path
     worker_state = worker_link.status()
+    from app.streaming import webrtc as _webrtc
     return JSONResponse(
         {
             "uptime_seconds": process_uptime_seconds(),
@@ -342,6 +343,7 @@ async def admin_ops(admin: User = Depends(require_admin)):
             },
             "worker": worker_state,
             "hubs": frame_hubs.all_stats(),
+            "webrtc": {"viewers": _webrtc.active_viewers()},
             "errors": recent_errors(limit=50),
         }
     )
