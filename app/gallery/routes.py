@@ -16,6 +16,10 @@ router = APIRouter(tags=["gallery"])
 templates = Jinja2Templates(directory="templates")
 
 
+_ADMIN_PRESETS = {"shared", "mine", "videos", "auto"}
+_VIEWER_PRESETS = {"shared", "mine", "videos"}
+
+
 def _normalize_gallery_params(
     page: int,
     per_page: int,
@@ -23,13 +27,15 @@ def _normalize_gallery_params(
     sort: str,
     q: str | None,
     preset: str | None,
+    user: User | None = None,
 ) -> dict:
     page = max(1, int(page or 1))
     per_page = max(1, min(int(per_page or 20), 60))
     media_type = type if type in ("image", "video") else None
     sort = "oldest" if sort == "oldest" else "newest"
     q = (q or "").strip()[:80]
-    preset = preset if preset in ("shared", "mine", "videos") else None
+    allowed = _ADMIN_PRESETS if (user and user.role == "admin") else _VIEWER_PRESETS
+    preset = preset if preset in allowed else None
     return {
         "page": page,
         "per_page": per_page,
@@ -45,9 +51,11 @@ def _compose_where(conditions: list[str]) -> str:
 
 
 def _gallery_access_conditions(user: User) -> tuple[list[str], list]:
+    # Non-admins never see auto-recordings; among manual recordings they see
+    # their own plus anything explicitly shared.
     if user.role == "admin":
         return [], []
-    return ["(r.user_id = ? OR r.shared = 1)"], [user.id]
+    return ["r.auto = FALSE", "(r.user_id = ? OR r.shared = 1)"], [user.id]
 
 
 def _gallery_where_clause(user: User, media_type: str | None, q: str, preset: str | None) -> tuple[str, list]:
@@ -60,6 +68,9 @@ def _gallery_where_clause(user: User, media_type: str | None, q: str, preset: st
         params.append(user.id)
     elif preset == "videos":
         conditions.append("r.type = 'video'")
+    elif preset == "auto":
+        # Admin-only — _normalize_gallery_params already enforced that.
+        conditions.append("r.auto = TRUE")
 
     if media_type:
         conditions.append("r.type = ?")
@@ -113,7 +124,7 @@ async def gallery_data(
     preset: str | None = Query(None),
     user: User = Depends(get_current_user),
 ):
-    params = _normalize_gallery_params(page, per_page, type, sort, q, preset)
+    params = _normalize_gallery_params(page, per_page, type, sort, q, preset, user)
     offset = (params["page"] - 1) * params["per_page"]
     order = "ASC" if params["sort"] == "oldest" else "DESC"
     where, query_params = _gallery_where_clause(user, params["type"], params["q"], params["preset"])
@@ -128,7 +139,8 @@ async def gallery_data(
 
         cursor = await conn.execute(
             f"SELECT r.id, r.type, r.filename, r.overlay_filename, r.raw_filename, "
-            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, r.metadata, u.username "
+            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, r.metadata, "
+            f"r.auto, r.auto_trigger, u.username "
             f"FROM recordings r JOIN users u ON r.user_id = u.id {where} "
             f"ORDER BY r.created_at {order}, r.id {order} LIMIT ? OFFSET ?",
             [*query_params, params["per_page"], offset],
@@ -165,7 +177,7 @@ async def gallery_detail_page(
     preset: str | None = Query(None),
     user: User = Depends(get_current_user),
 ):
-    params = _normalize_gallery_params(page, 20, type, sort, q, preset)
+    params = _normalize_gallery_params(page, 20, type, sort, q, preset, user)
     async with get_db() as conn:
         cursor = await conn.execute(
             "SELECT r.*, u.username FROM recordings r JOIN users u ON r.user_id = u.id WHERE r.id = ?",
@@ -175,8 +187,11 @@ async def gallery_detail_page(
 
     if not row:
         raise HTTPException(404, "Recording not found")
-    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
-        raise HTTPException(404, "Recording not found")
+    if user.role != "admin":
+        if row["auto"]:
+            raise HTTPException(404, "Recording not found")
+        if row["user_id"] != user.id and not row["shared"]:
+            raise HTTPException(404, "Recording not found")
 
     where, query_params = _gallery_where_clause(user, params["type"], params["q"], params["preset"])
     order = "ASC" if params["sort"] == "oldest" else "DESC"

@@ -192,6 +192,9 @@ async def list_recordings(
     params: list = []
 
     if user.role != "admin":
+        # Viewers never see auto recordings; among manual ones they see
+        # their own plus anything shared.
+        conditions.append("r.auto = FALSE")
         conditions.append("(r.user_id = ? OR r.shared = 1)")
         params.append(user.id)
 
@@ -226,7 +229,8 @@ async def list_recordings(
 
         cursor = await conn.execute(
             f"SELECT r.id, r.type, r.filename, r.overlay_filename, r.raw_filename, "
-            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, r.metadata, u.username "
+            f"r.size_bytes, r.duration_seconds, r.created_at, r.shared, r.metadata, "
+            f"r.auto, r.auto_trigger, u.username "
             f"FROM recordings r JOIN users u ON r.user_id = u.id {where} "
             f"ORDER BY r.created_at {order}, r.id {order} LIMIT ? OFFSET ?",
             params,
@@ -254,8 +258,11 @@ async def get_recording(recording_id: int, user: User = Depends(get_current_user
         row = await cursor.fetchone()
     if not row:
         raise HTTPException(404, "Recording not found")
-    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
-        raise HTTPException(404, "Recording not found")
+    if user.role != "admin":
+        if row["auto"]:
+            raise HTTPException(404, "Recording not found")
+        if row["user_id"] != user.id and not row["shared"]:
+            raise HTTPException(404, "Recording not found")
     return JSONResponse(dict(row))
 
 
@@ -267,15 +274,18 @@ async def serve_recording_file(
 ):
     async with get_db() as conn:
         cursor = await conn.execute(
-            "SELECT r.user_id, r.filename, r.overlay_filename, r.raw_filename, r.type, r.shared "
+            "SELECT r.user_id, r.filename, r.overlay_filename, r.raw_filename, r.type, r.shared, r.auto "
             "FROM recordings r WHERE r.id = ?",
             (recording_id,),
         )
         row = await cursor.fetchone()
     if not row:
         raise HTTPException(404, "Recording not found")
-    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
-        raise HTTPException(404, "Recording not found")
+    if user.role != "admin":
+        if row["auto"]:
+            raise HTTPException(404, "Recording not found")
+        if row["user_id"] != user.id and not row["shared"]:
+            raise HTTPException(404, "Recording not found")
 
     if variant == "raw" and row["raw_filename"]:
         fname = row["raw_filename"]
@@ -312,14 +322,17 @@ async def serve_recording_file(
 async def serve_thumbnail(recording_id: int, user: User = Depends(get_current_user)):
     async with get_db() as conn:
         cursor = await conn.execute(
-            "SELECT r.id, r.user_id, r.filename, r.overlay_filename, r.type, r.shared FROM recordings r WHERE r.id = ?",
+            "SELECT r.id, r.user_id, r.filename, r.overlay_filename, r.type, r.shared, r.auto FROM recordings r WHERE r.id = ?",
             (recording_id,),
         )
         row = await cursor.fetchone()
     if not row:
         raise HTTPException(404, "Recording not found")
-    if row["user_id"] != user.id and user.role != "admin" and not row["shared"]:
-        raise HTTPException(404, "Recording not found")
+    if user.role != "admin":
+        if row["auto"]:
+            raise HTTPException(404, "Recording not found")
+        if row["user_id"] != user.id and not row["shared"]:
+            raise HTTPException(404, "Recording not found")
 
     try:
         key = await ensure_thumbnail_from_row(row)

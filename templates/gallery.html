@@ -30,6 +30,9 @@
       <button type="button" class="secondary" data-preset="shared">Only shared</button>
       <button type="button" class="secondary" data-preset="mine">Only mine</button>
       <button type="button" class="secondary" data-preset="videos">Only videos</button>
+      {% if user.role == 'admin' %}
+      <button type="button" class="secondary" data-preset="auto">Only automatic</button>
+      {% endif %}
     </div>
     <div id="gallery-summary" class="gallery-summary">Loading...</div>
   </section>
@@ -39,5 +42,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js?v=20260509a"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/gallery.js?v=20260521a"></script>
 {% endblock %}

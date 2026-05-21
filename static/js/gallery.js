@@ -5,6 +5,7 @@ const GALLERY_PRESET_LABELS = {
   shared: "Only shared",
   mine: "Only mine",
   videos: "Only videos",
+  auto: "Only automatic",
 };
 let searchDebounceTimer = null;
 
@@ -157,6 +158,9 @@ function renderCard(item, state) {
   let flags = item.overlay_filename ? "Overlay" : "No overlay";
   if (item.raw_filename) flags += " | Raw";
   if (item.shared) flags += " | Shared";
+  if (item.auto) {
+    flags += item.auto_trigger ? ` | Auto (${item.auto_trigger})` : " | Auto";
+  }
   variantEl.textContent = flags;
   info.appendChild(variantEl);
 
