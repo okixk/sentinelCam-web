@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Stream – sentinelCam{% endblock %}
+{% block title %}Live – sentinelCam{% endblock %}
 {% block content %}
 <div class="page page-wide">
   <section class="page-hero">
     <div class="page-title-group">
       <h1>Live stream</h1>
+      <p class="small">WebRTC by default, MJPEG fallback if the browser cannot negotiate.</p>
     </div>
     <div class="hero-side">
       <div id="viewerStatusBadge" class="status-badge" data-state="connecting">
@@ -14,106 +15,39 @@
     </div>
   </section>
 
-  <section class="panel stream-panel stream-stage">
-    <div class="panel-header">
-      <div>
-        <h2>Camera</h2>
-        <p class="small">WebRTC by default, MJPEG fallback if the browser cannot negotiate.</p>
-      </div>
-      <div class="detail-view-controls">
-        <select id="viewerCameraSelect" aria-label="Camera"></select>
-        <select id="viewerTransport" aria-label="Transport">
-          <option value="auto">Auto (WebRTC, MJPEG fallback)</option>
-          <option value="webrtc">WebRTC only</option>
-          <option value="mjpeg">MJPEG only</option>
-        </select>
-        <button id="viewerReconnectBtn" class="secondary" type="button">Reconnect</button>
-      </div>
-    </div>
-    <div class="viewer" id="viewer-container">
-      <div id="viewerPlaceholder" class="stream-placeholder">Waiting for camera...</div>
-      <video id="viewer-video" class="stream-media" autoplay playsinline muted aria-label="Remote camera"></video>
-      <img id="viewer-mjpeg" class="stream-media" alt="MJPEG fallback" hidden />
-      <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
-    </div>
-    <div class="status-strip">
-      <div id="viewer-status" role="status" aria-live="polite">Looking for cameras...</div>
-    </div>
-  </section>
-
-  <section class="page-hero">
-    <div class="page-title-group">
-      <h2>Quick capture from this browser</h2>
-    </div>
-    <div class="hero-side">
-      <div id="captureStatusBadge" class="status-badge" data-state="connecting">
-        <span class="status-dot"></span>
-        <span id="captureStatusText">Idle</span>
-      </div>
-    </div>
-  </section>
-
   <div class="stream-layout">
     <section class="panel stream-panel stream-stage">
-      <div class="viewer" id="capture-container">
-        <div id="capturePlaceholder" class="stream-placeholder">Camera off</div>
-        <video id="capture-preview" class="stream-media" autoplay playsinline muted aria-label="Local camera preview"></video>
-        <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
-      </div>
-
-      <div class="stream-toolbar">
-        <div class="stream-actions">
-          <button id="start-camera-btn" data-action="start-camera">Start camera</button>
-          <button id="capture-btn" data-action="capture" disabled>Capture image</button>
-          <button id="record-btn" data-action="record" disabled>Start recording</button>
-          <button id="stop-camera-btn" data-action="stop-camera" class="secondary" disabled>Stop camera</button>
-          <span id="record-timer" class="record-timer"></span>
+      <div class="panel-header">
+        <div>
+          <h2>Camera</h2>
+        </div>
+        <div class="detail-view-controls">
+          <select id="viewerCameraSelect" aria-label="Camera"></select>
+          <select id="viewerTransport" aria-label="Transport">
+            <option value="auto">Auto (WebRTC, MJPEG fallback)</option>
+            <option value="webrtc">WebRTC only</option>
+            <option value="mjpeg">MJPEG only</option>
+          </select>
+          <button id="viewerReconnectBtn" class="secondary" type="button">Reconnect</button>
         </div>
       </div>
-
+      <div class="viewer" id="viewer-container">
+        <div id="viewerPlaceholder" class="stream-placeholder">Waiting for camera...</div>
+        <video id="viewer-video" class="stream-media" autoplay playsinline muted aria-label="Remote camera"></video>
+        <img id="viewer-mjpeg" class="stream-media" alt="MJPEG fallback" hidden />
+        <img src="/static/branding/sentinelCam.png" class="stream-watermark" alt="" aria-hidden="true" />
+      </div>
       <div class="status-strip">
-        <div id="status" role="status" aria-live="polite">Press "Start camera" to begin.</div>
+        <div id="viewer-status" role="status" aria-live="polite">Looking for cameras...</div>
       </div>
     </section>
 
     <aside class="sidebar-stack">
-      <section class="panel info-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Capture settings</h2>
-          </div>
-        </div>
-        <div class="connection-form">
-          <div class="field compact-field">
-            <label for="capture-camera">Camera</label>
-            <select id="capture-camera">
-              <option value="">Default</option>
-            </select>
-          </div>
-          <div class="field compact-field">
-            <label for="capture-resolution">Resolution</label>
-            <select id="capture-resolution">
-              <option value="1280x720">1280 x 720 (720p)</option>
-              <option value="1920x1080">1920 x 1080 (1080p)</option>
-              <option value="640x480">640 x 480 (480p)</option>
-            </select>
-          </div>
-          <div class="field compact-field">
-            <label for="capture-description">Description (optional)</label>
-            <input id="capture-description" type="text" maxlength="200" placeholder="Note for this capture" autocomplete="off" />
-          </div>
-        </div>
-        <div class="state-chips">
-          <div class="chip">Backend: <strong>Browser MediaDevices</strong></div>
-          <div class="chip">Storage: <strong>Local Docker volume</strong></div>
-          <div class="chip">Database: <strong>PostgreSQL</strong></div>
-        </div>
-      </section>
-
       <section class="panel">
         <div class="panel-header">
           <div>
             <h2>Passkeys</h2>
+            <p class="small">Sign in without a password from this device.</p>
           </div>
         </div>
         <div id="passkeys-list" class="inline-list">Loading...</div>
@@ -122,7 +56,6 @@
     </aside>
   </div>
 </div>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/viewer.js?v=20260520c"></script>
-<script nonce="{{ request.state.csp_nonce }}" src="/static/js/capture.js?v=20260519b"></script>
+<script nonce="{{ request.state.csp_nonce }}" src="/static/js/viewer.js?v=20260521a"></script>
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/passkeys.js?v=20260519a"></script>
 {% endblock %}
