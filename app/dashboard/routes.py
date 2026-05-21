@@ -11,6 +11,12 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import User, check_csrf, require_admin
+from app.auto_capture import (
+    COCO_CLASSES,
+    get_current_config as get_auto_capture_config,
+    save_config as save_auto_capture_config,
+    trigger_test_fire as auto_capture_test_fire,
+)
 from app.config import settings
 from app.database import get_db
 from app.observability import (
@@ -400,6 +406,72 @@ async def admin_revoke_camera(
     if not removed:
         raise HTTPException(404, "Camera not found or already revoked")
     _audit("admin.camera.revoke", admin=admin.username, camera_id=cam_id)
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+#  Auto-recording (admin-only)
+# ---------------------------------------------------------------------------
+
+
+class AutoCaptureBody(BaseModel):
+    enabled: bool = False
+    classes: list[str] = []
+    cooldown_s: int = 30
+    duration_s: int = 15
+    mode: str = "clip"
+
+
+@router.get("/api/admin/auto-capture")
+async def admin_get_auto_capture(admin: User = Depends(require_admin)):
+    return JSONResponse(
+        {
+            "config": get_auto_capture_config().as_dict(),
+            "classes_catalog": list(COCO_CLASSES),
+        }
+    )
+
+
+@router.patch("/api/admin/auto-capture")
+async def admin_patch_auto_capture(
+    body: AutoCaptureBody,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    try:
+        config = await save_auto_capture_config(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    _audit("admin.auto_capture.update", admin=admin.username, config=config.as_dict())
+    return JSONResponse({"ok": True, "config": config.as_dict()})
+
+
+class AutoCaptureTestBody(BaseModel):
+    camera_id: int
+    trigger: str = "person"
+
+    @field_validator("trigger")
+    @classmethod
+    def _trim(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value or len(value) > 64:
+            raise ValueError("trigger must be 1-64 chars")
+        return value
+
+
+@router.post("/api/admin/auto-capture/test-fire", status_code=202)
+async def admin_auto_capture_test_fire(
+    body: AutoCaptureTestBody,
+    admin: User = Depends(require_admin),
+    _csrf=Depends(check_csrf),
+):
+    await auto_capture_test_fire(body.camera_id, body.trigger)
+    _audit(
+        "admin.auto_capture.test_fire",
+        admin=admin.username,
+        camera_id=body.camera_id,
+        trigger=body.trigger,
+    )
     return JSONResponse({"ok": True})
 
 

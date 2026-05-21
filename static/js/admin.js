@@ -806,11 +806,103 @@ function attachCopyOnce(buttonId, sourceId) {
   });
 }
 
+async function loadAutoCapture() {
+  const form = document.getElementById("auto-capture-form");
+  if (!form) return;
+  try {
+    const resp = await fetch("/api/admin/auto-capture", { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    const config = data.config || {};
+    const catalog = Array.isArray(data.classes_catalog) ? data.classes_catalog : [];
+
+    const enabled = document.getElementById("auto-capture-enabled");
+    const mode = document.getElementById("auto-capture-mode");
+    const duration = document.getElementById("auto-capture-duration");
+    const cooldown = document.getElementById("auto-capture-cooldown");
+    const classes = document.getElementById("auto-capture-classes");
+    if (!enabled || !mode || !duration || !cooldown || !classes) return;
+
+    if (!classes.options.length) {
+      const selected = new Set(config.classes || []);
+      classes.innerHTML = catalog.map(c =>
+        `<option value="${escHtml(c)}"${selected.has(c) ? " selected" : ""}>${escHtml(c)}</option>`
+      ).join("");
+    } else {
+      const selected = new Set(config.classes || []);
+      Array.from(classes.options).forEach(opt => {
+        opt.selected = selected.has(opt.value);
+      });
+    }
+    enabled.checked = !!config.enabled;
+    mode.value = config.mode || "clip";
+    duration.value = String(config.duration_s || 15);
+    cooldown.value = String(config.cooldown_s || 30);
+  } catch (err) {
+    toast("Auto-recording config failed to load: " + err.message, { tone: "error", title: "Auto-capture" });
+  }
+}
+
+async function saveAutoCapture(event) {
+  event.preventDefault();
+  const enabled = document.getElementById("auto-capture-enabled");
+  const mode = document.getElementById("auto-capture-mode");
+  const duration = document.getElementById("auto-capture-duration");
+  const cooldown = document.getElementById("auto-capture-cooldown");
+  const classesSel = document.getElementById("auto-capture-classes");
+  const classes = classesSel
+    ? Array.from(classesSel.selectedOptions).map(o => o.value)
+    : [];
+  const body = {
+    enabled: !!enabled?.checked,
+    classes,
+    cooldown_s: parseInt(cooldown?.value || "30", 10),
+    duration_s: parseInt(duration?.value || "15", 10),
+    mode: mode?.value || "clip",
+  };
+  try {
+    const resp = await fetch("/api/admin/auto-capture", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail?.error || data.detail || data.error || ("HTTP " + resp.status));
+    }
+    toast("Auto-recording settings saved.", { tone: "success", title: "Auto-capture" });
+  } catch (err) {
+    toast("Save failed: " + err.message, { tone: "error", title: "Auto-capture" });
+  }
+}
+
+async function fireAutoCaptureTest(event) {
+  event.preventDefault();
+  const camId = parseInt(document.getElementById("auto-capture-test-camera")?.value || "0", 10);
+  const trigger = (document.getElementById("auto-capture-test-trigger")?.value || "person").trim();
+  if (!camId || !trigger) return;
+  try {
+    const resp = await fetch("/api/admin/auto-capture/test-fire", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrf() },
+      body: JSON.stringify({ camera_id: camId, trigger }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail?.error || data.detail || data.error || ("HTTP " + resp.status));
+    }
+    toast(`Test capture queued for camera #${camId} (${trigger}).`, { tone: "success", title: "Auto-capture" });
+  } catch (err) {
+    toast("Test fire failed: " + err.message, { tone: "error", title: "Auto-capture" });
+  }
+}
+
 loadUsers();
 loadSessions();
 loadSystemInfo();
 loadCameras();
 loadWorkers();
+loadAutoCapture();
 loadOpsStatus({ force: true }).catch(() => {});
 loadSecurityStatus({ force: true }).catch(() => {});
 
@@ -832,6 +924,8 @@ document.getElementById("create-user-form").addEventListener("submit", createUse
 document.getElementById("security-settings-form")?.addEventListener("submit", saveSecuritySettings);
 document.getElementById("create-camera-form")?.addEventListener("submit", createCamera);
 document.getElementById("create-worker-form")?.addEventListener("submit", createWorker);
+document.getElementById("auto-capture-form")?.addEventListener("submit", saveAutoCapture);
+document.getElementById("auto-capture-test-form")?.addEventListener("submit", fireAutoCaptureTest);
 attachCopyOnce("copy-camera-token-btn", "new-camera-token-value");
 attachCopyOnce("copy-worker-token-btn", "new-worker-token-value");
 window.setInterval(() => { loadCameras(); loadWorkers(); }, 10_000);

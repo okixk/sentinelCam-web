@@ -76,20 +76,15 @@ async def _insert_recording(
     metadata_payload: dict[str, object] = {}
     if description:
         metadata_payload["description"] = description
-    if camera_id is not None:
-        metadata_payload["camera_id"] = camera_id
-    if auto_trigger:
-        metadata_payload["auto_trigger"] = auto_trigger
-    if auto:
-        metadata_payload["auto"] = True
     metadata = json.dumps(metadata_payload) if metadata_payload else None
 
     async with get_db() as conn:
         cursor = await conn.execute(
             "INSERT INTO recordings "
             "(user_id, type, filename, overlay_filename, raw_filename, "
-            " size_bytes, duration_seconds, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            " size_bytes, duration_seconds, metadata, "
+            " auto, auto_trigger, camera_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (
                 user_id,
                 type_,
@@ -99,6 +94,9 @@ async def _insert_recording(
                 size_bytes,
                 duration_seconds,
                 metadata,
+                bool(auto),
+                auto_trigger,
+                camera_id,
             ),
         )
         row = await cursor.fetchone()

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.auto_capture import reload as reload_auto_capture
 from app.config import settings
 from app.database import close_pool, init_db
 from app.observability import install_error_capture
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await load_and_apply_security_config()
     await ensure_storage()
+    await reload_auto_capture()
     try:
         yield
     finally:

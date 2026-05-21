@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import User, check_csrf, get_current_user
+from app.auto_capture import handle_detection
 from app.database import get_db
 from app.recording.live_capture import (
     ALLOWED_CLIP_DURATIONS,
@@ -190,6 +191,23 @@ async def _handle_worker_text(conn, text: str) -> None:
                 await update_worker_status(conn.worker_id, json.dumps(status_payload))
             except Exception:
                 log.exception("update_worker_status failed")
+        return
+    if kind == "detection":
+        # {"type":"detection","camera_id":<int>,"classes":["person",...]}
+        try:
+            cam_id = int(msg.get("camera_id"))
+        except (TypeError, ValueError):
+            return
+        raw_classes = msg.get("classes") or []
+        if not isinstance(raw_classes, list):
+            return
+        classes = [str(c) for c in raw_classes if isinstance(c, str)]
+        if not classes:
+            return
+        try:
+            await handle_detection(cam_id, classes)
+        except Exception:
+            log.exception("handle_detection failed for camera %d", cam_id)
 
 
 # ---------------------------------------------------------------------------
