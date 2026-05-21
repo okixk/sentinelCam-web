@@ -172,6 +172,8 @@
     </aside>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
 <script nonce="{{ request.state.csp_nonce }}">
   const recId = {{ rec.id }};
   const backHref = {{ back_href | tojson }};
@@ -468,3 +470,4 @@
   applyMode(initialMode);
 </script>
 {% endblock %}
+

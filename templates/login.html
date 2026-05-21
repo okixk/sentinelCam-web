@@ -38,5 +38,7 @@
     </div>
   </section>
 </div>
+{% endblock %}
+{% block scripts %}
 <script nonce="{{ request.state.csp_nonce }}" src="/static/js/auth.js?v=20260320b"></script>
 {% endblock %}
