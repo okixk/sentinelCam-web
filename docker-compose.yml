@@ -2,24 +2,37 @@
 # storage + WireGuard VPN.
 #
 # Bring everything up:
+#   docker network create proxy-net      # one-time, shared with Probe-VA
 #   # create a .env that defines POSTGRES_PASSWORD, ADMIN_PASSWORD, WG_HOST,
 #   # WG_PASSWORD_HASH (see README for details), then:
 #   docker compose up -d --build
 #
 # Externally only three ports are exposed:
 #   - 80/tcp  : Apache HTTP -> 301 to HTTPS
-#   - 443/tcp : Apache HTTPS (reverse-proxies the web container)
+#   - 443/tcp : Apache HTTPS (reverse-proxies the web container, and studygames.ch -> probe-va)
 #   - 1194/udp: WireGuard VPN (configurable via WG_PORT)
-# Everything else (postgres, the FastAPI web container, the wg-easy admin UI)
-# lives on the internal `sentinelcam` network. The wg-easy admin console is
+# Postgres, the FastAPI web container and the wg-easy admin UI live on the
+# internal `sentinelcam` network. Apache additionally joins the shared
+# `proxy-net` network so it can reach the separately-managed Probe-VA stack
+# (see /home/administrator/Probe-VA/docker-compose.yml). The two stacks start
+# and stop independently — sentinelcam.ch keeps working when probe-va is
+# down (the studygames vhost just returns 502). The wg-easy admin console is
 # bound to host loopback only — you reach it via SSH tunnel for the initial
 # setup, then via the VPN once a client is configured.
 
 name: sentinelcam
 
 networks:
+  # Internal network for the sentinelCam stack itself (postgres, web, wg-easy).
   sentinelcam:
     driver: bridge
+  # Shared edge network used to reach sibling stacks behind the same Apache
+  # reverse proxy (currently: Probe-VA / studygames.ch). Declared external so
+  # the two stacks can be started and stopped independently.
+  # Create it once on the host with:  docker network create proxy-net
+  proxy-net:
+    external: true
+    name: proxy-net
 
 volumes:
   postgres-data:
@@ -88,6 +101,7 @@ services:
       - web
     environment:
       SC_PUBLIC_HOSTNAME: ${SC_PUBLIC_HOSTNAME:-sentinelcam.local}
+      SC_ALT_HOSTNAME: ${SC_ALT_HOSTNAME:-studygames.local}
     ports:
       - "80:80"
       - "443:443"
@@ -95,7 +109,9 @@ services:
       # Self-signed certificate is generated on first start by the entrypoint.
       # Drop a real cert (server.crt / server.key) into this volume to override.
       - apache-certs:/etc/apache/certs
-    networks: [sentinelcam]
+    # `sentinelcam` for the FastAPI backend, `proxy-net` to reach the
+    # independently-managed Probe-VA container at http://probe-va:80.
+    networks: [sentinelcam, proxy-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost/healthz"]
       interval: 15s

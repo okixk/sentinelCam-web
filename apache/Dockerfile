@@ -22,7 +22,7 @@ RUN sed -i \
 COPY httpd-vhosts.conf /usr/local/apache2/conf/extra/httpd-vhosts.conf
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
-    && printf 'Define SC_PUBLIC_HOSTNAME "sentinelcam.local"\n' \
+    && printf 'Define SC_PUBLIC_HOSTNAME "sentinelcam.local"\nDefine SC_ALT_HOSTNAME "studygames.local"\n' \
        > /usr/local/apache2/conf/extra/sc-define.conf
 
 EXPOSE 80 443
