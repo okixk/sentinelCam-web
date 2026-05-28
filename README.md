@@ -51,6 +51,49 @@ the internal `sentinelcam` Docker network or on host loopback.
 > **WireGuard** client, not an OpenVPN client. Set `WG_PORT` in `.env` to
 > any UDP port you prefer.
 
+### Internal network topology (VPN reachability)
+
+```text
+           VPN client (10.8.0.5)
+                 │
+                 │  WireGuard tunnel (UDP 1194)
+                 ▼
+        ┌────────────────────────────┐
+        │  wg-easy container         │
+        │  ├─ wg0:    10.8.0.1       │  ← tunnel side (WireGuard)
+        │  └─ eth0:   172.30.0.20    │  ← bridge side (docker)
+        │      SNAT / MASQUERADE     │
+        └────────────────────────────┘
+                 │
+                 ▼  docker bridge "sentinelcam" (172.30.0.0/24)
+        ┌────────────────┬────────────────┬────────────────┐
+        │ traefik        │ web            │ postgres       │
+        │ 172.30.0.10    │ 172.30.0.x     │ 172.30.0.x     │
+        └────────────────┴────────────────┴────────────────┘
+```
+
+- `10.8.0.0/24` is the **WireGuard tunnel network**. Only WireGuard peers
+  have addresses there: the wg-easy container itself (`10.8.0.1`) and the
+  connected clients (`10.8.0.2`, `10.8.0.3`, …). Traefik, postgres and
+  the web container do not speak WireGuard and have no `10.8.0.x` address.
+- `172.30.0.0/24` is the **docker bridge** the containers use to talk to
+  each other.
+- Only wg-easy is dual-homed: it sits on both networks at once.
+
+So from inside the VPN you can reach the admin UIs at:
+
+| Service           | URL                                       | Notes                           |
+|-------------------|-------------------------------------------|---------------------------------|
+| wg-easy admin     | `http://10.8.0.1:51821`                   | tunnel-internal IP (wg-easy *is* this address) |
+| wg-easy admin     | `http://172.30.0.20:51821`                | bridge IP (same UI, alternate path)            |
+| Traefik dashboard | `http://172.30.0.10:8080/dashboard/`      | bridge IP only — Traefik has no 10.8.0.x       |
+
+Why not give Traefik a `10.8.0.x` address too? That would make it a
+WireGuard peer (with its own keypair and a `[Peer]` entry in the server
+config) — extra moving parts for no real gain. Routing through the
+wg-easy NAT to the docker bridge is the standard way to expose
+sibling containers to VPN clients.
+
 ## Quick start
 
 1. Generate a bcrypt hash for the wg-easy admin password:
@@ -98,16 +141,18 @@ the internal `sentinelcam` Docker network or on host loopback.
 
 ## Admin consoles
 
-Both admin surfaces are bound to `127.0.0.1` on the host, so they are
-reachable from the host itself but not the public internet:
+Both admin surfaces are bound to `127.0.0.1` on the host **and** reachable
+via the WireGuard tunnel on fixed docker-bridge IPs (see
+[Internal network topology](#internal-network-topology-vpn-reachability)):
 
-- **Traefik dashboard**: <http://127.0.0.1:8080/dashboard/>
-- **wg-easy admin**: <http://127.0.0.1:51821> — log in with the password
-  whose bcrypt hash you set in `WG_PASSWORD_HASH`
+| Service           | Via SSH tunnel (host loopback)    | Via active VPN                      |
+|-------------------|-----------------------------------|-------------------------------------|
+| Traefik dashboard | `http://127.0.0.1:8080/dashboard/`| `http://172.30.0.10:8080/dashboard/`|
+| wg-easy admin     | `http://127.0.0.1:51821`          | `http://10.8.0.1:51821` *or* `http://172.30.0.20:51821` |
 
-The recommended way to reach them from your laptop is an **SSH tunnel**
-(or via the VPN once a client is configured — see below). Do not publish
-either to the public internet.
+Neither dashboard is published on the public internet. The wg-easy admin
+UI is also where you create new VPN client configs and download the
+`.conf` / QR code.
 
 ## VPN access (WireGuard)
 
