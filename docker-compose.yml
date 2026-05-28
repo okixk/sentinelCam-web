@@ -29,9 +29,15 @@
 name: sentinelcam
 
 networks:
-  # Internal network for the sentinelCam stack itself (postgres, web, wg-easy).
+  # Internal network for the sentinelCam stack itself (postgres, web,
+  # wg-easy, traefik). Subnet is pinned so the Traefik dashboard is
+  # reachable from inside the WireGuard tunnel at a stable IP — the
+  # wg-easy container masquerades VPN client traffic onto this bridge.
   sentinelcam:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
   # Shared edge network used by Traefik to reach backends from both this
   # stack (web) and the separately-managed Probe-VA stack. Declared external
   # so the two stacks can be started and stopped independently.
@@ -60,7 +66,13 @@ services:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
       - ./certs:/etc/traefik/certs:ro
-    networks: [sentinelcam, proxy-net]
+    networks:
+      sentinelcam:
+        # Fixed bridge IP so VPN clients can browse the dashboard at
+        # http://172.30.0.10:8080/dashboard/ (the wg-easy container
+        # masquerades traffic onto this bridge — see network comment).
+        ipv4_address: 172.30.0.10
+      proxy-net: {}
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 15s
@@ -156,4 +168,9 @@ services:
     sysctls:
       net.ipv4.ip_forward: "1"
       net.ipv4.conf.all.src_valid_mark: "1"
-    networks: [sentinelcam]
+    networks:
+      sentinelcam:
+        # Fixed bridge IP so VPN clients can also reach the admin UI at
+        # http://172.30.0.20:51821 in addition to the tunnel-internal
+        # http://10.8.0.1:51821.
+        ipv4_address: 172.30.0.20
