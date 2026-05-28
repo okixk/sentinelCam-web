@@ -1,0 +1,31 @@
+# Dynamic TLS config: Cloudflare Origin Certificates.
+#
+# Drop the certificate/key pairs into ../../certs/ on the host. The path
+# inside the Traefik container is /etc/traefik/certs/ (mounted read-only
+# in docker-compose.yml).
+#
+# Cloudflare Origin Certificates are issued from the Cloudflare dashboard
+# (SSL/TLS -> Origin Server -> Create Certificate). They are only trusted
+# by Cloudflare's edge -> origin connection, so the site MUST be behind
+# Cloudflare's proxy ("orange cloud") for browsers to trust the chain.
+# These certs typically have 15-year validity, so no ACME automation is
+# needed.
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/sentinelcam.crt
+      keyFile:  /etc/traefik/certs/sentinelcam.key
+    - certFile: /etc/traefik/certs/aarestadt.crt
+      keyFile:  /etc/traefik/certs/aarestadt.key
+
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: false
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256

@@ -1,0 +1,34 @@
+# Static routing definitions. Hostname references (web, probe-va) are
+# resolved by docker network DNS on the proxy-net network — both backend
+# containers must be attached to that network for this to work.
+#
+# Update SC_PUBLIC_HOSTNAME / SC_ALT_HOSTNAME here if you change them in
+# .env. The values are not interpolated from environment variables when
+# Traefik reads this file.
+
+http:
+  routers:
+    sentinelcam:
+      rule: "Host(`sentinelcam.ch`)"
+      entryPoints: [websecure]
+      service: sentinelcam
+      tls: {}
+
+    aarestadt:
+      rule: "Host(`aarestadt.info`)"
+      entryPoints: [websecure]
+      service: aarestadt
+      tls: {}
+
+  services:
+    sentinelcam:
+      loadBalancer:
+        servers:
+          - url: "http://web:80"
+        passHostHeader: true
+
+    aarestadt:
+      loadBalancer:
+        servers:
+          - url: "http://probe-va:80"
+        passHostHeader: true

@@ -1,24 +1,30 @@
-# Full sentinelCam stack: web app + Apache reverse proxy + database + local
-# storage + WireGuard VPN.
+# Full sentinelCam stack: Traefik edge router + web app (Apache+FastAPI) +
+# database + local storage + WireGuard VPN.
 #
 # Bring everything up:
 #   docker network create proxy-net      # one-time, shared with Probe-VA
+#   # Drop Cloudflare Origin Certs into ./certs/ (see certs/README.md), and
 #   # create a .env that defines POSTGRES_PASSWORD, ADMIN_PASSWORD, WG_HOST,
 #   # WG_PASSWORD_HASH (see README for details), then:
 #   docker compose up -d --build
 #
 # Externally only three ports are exposed:
-#   - 80/tcp  : Apache HTTP -> 301 to HTTPS
-#   - 443/tcp : Apache HTTPS (reverse-proxies the web container, and studygames.ch -> probe-va)
+#   - 80/tcp  : Traefik HTTP -> 301 to HTTPS
+#   - 443/tcp : Traefik HTTPS, routes by Host header:
+#               sentinelcam.ch -> web container (Apache in front of FastAPI)
+#               aarestadt.info -> probe-va container (separate compose stack)
 #   - 1194/udp: WireGuard VPN (configurable via WG_PORT)
-# Postgres, the FastAPI web container and the wg-easy admin UI live on the
-# internal `sentinelcam` network. Apache additionally joins the shared
-# `proxy-net` network so it can reach the separately-managed Probe-VA stack
-# (see /home/administrator/Probe-VA/docker-compose.yml). The two stacks start
-# and stop independently — sentinelcam.ch keeps working when probe-va is
-# down (the studygames vhost just returns 502). The wg-easy admin console is
-# bound to host loopback only — you reach it via SSH tunnel for the initial
-# setup, then via the VPN once a client is configured.
+#
+# Postgres, the FastAPI web container, the Traefik dashboard and the
+# wg-easy admin UI live on the internal `sentinelcam` network. Traefik
+# additionally joins the shared `proxy-net` network so it can reach the
+# separately-managed Probe-VA stack (see /home/administrator/Probe-VA/
+# docker-compose.yml). The two stacks start and stop independently —
+# sentinelcam.ch keeps working when probe-va is down (the aarestadt
+# Traefik router just returns 502). Both the Traefik dashboard and the
+# wg-easy admin UI are bound to host loopback only — reach them via SSH
+# tunnel for the initial setup, or via the VPN once a client is
+# configured.
 
 name: sentinelcam
 
@@ -26,9 +32,9 @@ networks:
   # Internal network for the sentinelCam stack itself (postgres, web, wg-easy).
   sentinelcam:
     driver: bridge
-  # Shared edge network used to reach sibling stacks behind the same Apache
-  # reverse proxy (currently: Probe-VA / studygames.ch). Declared external so
-  # the two stacks can be started and stopped independently.
+  # Shared edge network used by Traefik to reach backends from both this
+  # stack (web) and the separately-managed Probe-VA stack. Declared external
+  # so the two stacks can be started and stopped independently.
   # Create it once on the host with:  docker network create proxy-net
   proxy-net:
     external: true
@@ -37,10 +43,31 @@ networks:
 volumes:
   postgres-data:
   recordings-data:
-  apache-certs:
   wireguard-data:
 
 services:
+  traefik:
+    image: traefik:v3.2
+    restart: unless-stopped
+    command:
+      - --configfile=/etc/traefik/traefik.yml
+    ports:
+      - "80:80"
+      - "443:443"
+      # Dashboard, bound to host loopback only (reach via SSH tunnel or VPN).
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./certs:/etc/traefik/certs:ro
+    networks: [sentinelcam, proxy-net]
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -70,7 +97,9 @@ services:
     environment:
       WEB_PORT: ${WEB_PORT:-3000}
       SC_PUBLIC: ${SC_PUBLIC:-1}
-      SC_FORWARDED_ALLOW_IPS: "*"
+      # Apache inside the container forwards from 127.0.0.1; Traefik adds
+      # X-Forwarded-* upstream of Apache. Trust both.
+      SC_FORWARDED_ALLOW_IPS: "127.0.0.1"
       INITIAL_ADMIN_USER: ${ADMIN_USER:-admin}
       INITIAL_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
@@ -82,42 +111,18 @@ services:
       LOCAL_STORAGE_PATH: ${LOCAL_STORAGE_PATH:-/data/recordings}
     volumes:
       - recordings-data:${LOCAL_STORAGE_PATH:-/data/recordings}
-    networks: [sentinelcam]
+    # The web container needs to be reachable from Traefik (proxy-net) and
+    # also reach Postgres on the internal network (sentinelcam).
+    networks: [sentinelcam, proxy-net]
     expose:
-      - "3000"
+      - "80"
     healthcheck:
       test: ["CMD", "python", "-c",
-        "import urllib.request; urllib.request.urlopen('http://localhost:3000/healthz', timeout=5)"]
+        "import urllib.request; urllib.request.urlopen('http://localhost/healthz', timeout=5)"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 20s
-
-  apache:
-    build:
-      context: ./apache
-    restart: unless-stopped
-    depends_on:
-      - web
-    environment:
-      SC_PUBLIC_HOSTNAME: ${SC_PUBLIC_HOSTNAME:-sentinelcam.local}
-      SC_ALT_HOSTNAME: ${SC_ALT_HOSTNAME:-studygames.local}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # Self-signed certificate is generated on first start by the entrypoint.
-      # Drop a real cert (server.crt / server.key) into this volume to override.
-      - apache-certs:/etc/apache/certs
-    # `sentinelcam` for the FastAPI backend, `proxy-net` to reach the
-    # independently-managed Probe-VA container at http://probe-va:80.
-    networks: [sentinelcam, proxy-net]
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 4
-      start_period: 15s
 
   wg-easy:
     # WireGuard VPN. Default port is 1194/udp (the same number OpenVPN
@@ -136,8 +141,10 @@ services:
     volumes:
       - wireguard-data:/etc/wireguard
     ports:
-      # The one VPN port reachable from the public network.
-      - "${WG_PORT:-1194}:51820/udp"
+      # The one VPN port reachable from the public network. wg-easy v14
+      # listens on WG_PORT *inside* the container (the legacy fixed 51820
+      # is gone in v14), so host and container port must match.
+      - "${WG_PORT:-1194}:${WG_PORT:-1194}/udp"
       # Admin UI bound to host loopback only. Reach it from your laptop via
       #   ssh -L 51821:127.0.0.1:51821 <user>@<server>
       # for the initial config, or from inside an already-connected VPN

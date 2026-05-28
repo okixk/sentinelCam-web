@@ -1,0 +1,47 @@
+# Traefik static configuration.
+#
+# Two entrypoints:
+#   - web      :80   -> permanent redirect to websecure
+#   - websecure:443  -> TLS terminated using the Cloudflare Origin Certs
+#                       loaded by the file provider (see dynamic/tls.yml)
+#
+# Routing is split between two providers:
+#   - docker : reads labels from containers attached to the proxy-net
+#              network. Used for sentinelcam-web and probe-va.
+#   - file   : declares the static TLS certificates and (TLS-level) options.
+#
+# The API/dashboard is exposed on :8080 in insecure mode, which is safe
+# because the port is bound to 127.0.0.1 in docker-compose.yml. Reach it
+# either over the VPN tunnel (10.8.0.1:8080) or by SSH-tunneling 8080.
+
+api:
+  dashboard: true
+  insecure: true   # Plain HTTP dashboard, but bound to 127.0.0.1 on the host.
+
+# /ping endpoint on the API entrypoint (8080) for the container healthcheck.
+ping: {}
+
+log:
+  level: INFO
+
+accessLog: {}
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+providers:
+  # All routes are declared statically in dynamic/*.yml. Traefik resolves
+  # backend hostnames (web, probe-va) via docker network DNS on proxy-net.
+  # This sidesteps the docker daemon API entirely — no socket mount needed.
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true

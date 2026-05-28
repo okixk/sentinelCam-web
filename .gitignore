@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# Cloudflare Origin Certificates — never commit private keys
+certs/*.crt
+certs/*.key
+certs/*.pem
 .venv/
 venv/
 __pycache__/

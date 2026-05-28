@@ -1,10 +1,11 @@
 # VPN connection guide
 
-Everything except the web app (HTTPS on 443) and the WireGuard endpoint
-(UDP on 1194) is closed to the public network. This file walks through how
-to connect to the VPN so you can reach the internal services
-(`wg-easy` admin UI, the Postgres database, the web container's debug port,
-the host's SSH).
+Everything except the public-facing HTTPS sites (port 443, routed by
+Traefik) and the WireGuard endpoint (UDP on 1194, on `vpn.sentinelcam.ch`)
+is closed to the public network. This file walks through how to connect
+to the VPN so you can reach the internal services (the Traefik dashboard,
+the `wg-easy` admin UI, the Postgres database, the web container's debug
+port, the host's SSH).
 
 The server runs **WireGuard** on UDP `1194`. WireGuard works on any UDP port
 — the protocol on the wire is still WireGuard. You need a **WireGuard
@@ -116,6 +117,7 @@ With the default `AllowedIPs = 0.0.0.0/0, ::/0` (full tunnel) all traffic
 from the client exits via the server, so you can reach:
 
 - The web app on `https://<server>/`
+- The Traefik dashboard on `http://10.8.0.1:8080/dashboard/`
 - The wg-easy admin UI on `http://10.8.0.1:51821`
 - The server's SSH on `<server>:22` if SSH is permitted on the LAN
 - Containers on the `sentinelcam` Docker bridge by their internal IP.

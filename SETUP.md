@@ -1,9 +1,9 @@
 # sentinelCam Web — Setup-Anleitung
 
-Schritt-für-Schritt-Anleitung, wie du den **Web-Stack** (FastAPI-App, Apache-
-Reverse-Proxy, PostgreSQL, wg-easy-VPN) startest und konfigurierst. Die
-Architektur ist im [README](README.md) beschrieben — dieses Dokument
-konzentriert sich auf den Betrieb.
+Schritt-für-Schritt-Anleitung, wie du den **Web-Stack** (Traefik-Edge-Router,
+Apache+FastAPI-Web-Container, PostgreSQL, wg-easy-VPN) startest und
+konfigurierst. Die Architektur ist im [README](README.md) beschrieben —
+dieses Dokument konzentriert sich auf den Betrieb.
 
 > Diese Anleitung passt zum Branch `feature/infra-revamp`. Sie umfasst die
 > WebRTC-SFU-Phase (aiortc), bei der Browser standardmässig per WebRTC
@@ -62,36 +62,61 @@ expandiert die Shell die Zeichen weg.
 
 ---
 
-## 3. Stack hochfahren
+## 3. Cloudflare Origin Certificates ablegen
+
+Traefik terminiert TLS mit Cloudflare Origin Certs. Pro Domain ein Cert
+im Cloudflare-Dashboard erstellen (SSL/TLS → Origin Server → Create
+Certificate) und die vier Dateien nach `./certs/` legen:
+
+```
+certs/
+├── sentinelcam.crt
+├── sentinelcam.key
+├── aarestadt.crt
+└── aarestadt.key
+```
+
+Die Dateien sind via `.gitignore` ausgeschlossen. Damit Browser den
+Origin-Cert akzeptieren, müssen `sentinelcam.ch` und `aarestadt.info`
+in Cloudflare **proxied** (orange Wolke) sein. `vpn.sentinelcam.ch` muss
+weiterhin **DNS only** (graue Wolke) sein, weil Cloudflare WireGuard-UDP
+nicht durchreicht.
+
+---
+
+## 4. Stack hochfahren
 
 ```bash
 docker compose up -d --build
 ```
 
-Erststart dauert ein paar Minuten (Image-Build, Apache erzeugt ein
-selbst-signiertes Zertifikat). Status prüfen:
+Erststart dauert ein paar Minuten (Image-Build). Status prüfen:
 
 ```bash
 docker compose ps
-docker compose logs -f web      # FastAPI-Logs
-docker compose logs -f apache   # Reverse-Proxy + TLS
+docker compose logs -f web      # Apache + uvicorn (multi-process)
+docker compose logs -f traefik  # Edge-Routing + TLS
 ```
 
 Healthcheck der App:
 
 ```bash
-curl -k https://localhost/healthz
+curl https://localhost/healthz
 # -> {"ok":true}
 ```
 
 Im Browser dann `https://<dein-host>/` öffnen, mit `ADMIN_USER` /
-`ADMIN_PASSWORD` einloggen. Erst-Login zeigt eine Zertifikatswarnung
-(self-signed); akzeptieren oder eigenes Cert-Paar `server.crt`/`server.key`
-ins `apache-certs`-Volume legen.
+`ADMIN_PASSWORD` einloggen. Falls Browser-Warnung kommt: Cloudflare-Proxy
+(orange Wolke) für den Hostnamen prüfen — ohne ihn akzeptiert kein Browser
+das Origin Cert.
+
+Das Traefik-Dashboard liegt auf `127.0.0.1:8080` — entweder per
+SSH-Tunnel (`ssh -L 8080:127.0.0.1:8080 <user>@<server>`) oder über das
+VPN erreichbar.
 
 ---
 
-## 4. Kamera- und Worker-Tokens ausstellen
+## 5. Kamera- und Worker-Tokens ausstellen
 
 Im Admin-Bereich (`/admin`):
 
@@ -106,7 +131,7 @@ widerrufen.
 
 ---
 
-## 5. VPN-Setup
+## 6. VPN-Setup
 
 UDP/1194 ist nur WireGuard — Clients brauchen einen WireGuard-Client (kein
 OpenVPN). Erst-Setup der Peers:
@@ -121,7 +146,7 @@ wg-easy-Admin-Passwort einloggen. Neue Peers anlegen, QR-Code scannen oder
 
 ---
 
-## 6. Streaming-Stack: was läuft wo
+## 7. Streaming-Stack: was läuft wo
 
 ```
  Raspberry Pi (Kamera)  --wss--> /api/ingest/{cam_id}    \
@@ -144,7 +169,7 @@ Wenn der Worker offline ist, gehen die rohen Pi-Frames direkt an die Browser
 
 ---
 
-## 7. WebRTC-Viewer (Phase B, aiortc)
+## 8. WebRTC-Viewer (Phase B, aiortc)
 
 `app/streaming/webrtc.py` implementiert eine simple WebRTC-SFU: pro Browser
 eine `RTCPeerConnection`, ein `MJPEGSource`-Track decodiert die JPEGs aus dem
@@ -164,7 +189,7 @@ eine `RTCPeerConnection`, ein `MJPEGSource`-Track decodiert die JPEGs aus dem
 
 ### Voraussetzungen für WebRTC im Browser
 
-- Verbindung muss **TLS** sein (Apache macht das). Auf `http://localhost`
+- Verbindung muss **TLS** sein (Traefik macht das). Auf `http://localhost`
   funktioniert WebRTC ebenfalls; auf `http://<andere-domain>` blockt der
   Browser die `RTCPeerConnection`.
 - Browser braucht `RTCPeerConnection` + H.264-Decode-Fähigkeit (alle
@@ -184,7 +209,7 @@ eine `RTCPeerConnection`, ein `MJPEGSource`-Track decodiert die JPEGs aus dem
 
 ---
 
-## 8. Tests / Smoke
+## 9. Tests / Smoke
 
 ```bash
 docker compose exec web python -m unittest tests.test_smoke -v
@@ -195,7 +220,7 @@ registriert sind.
 
 ---
 
-## 9. Updates
+## 10. Updates
 
 ```bash
 git pull
@@ -207,13 +232,13 @@ spielt fehlende Schemaänderungen automatisch ein.
 
 ---
 
-## 10. Wichtige Pfade & Volumes
+## 11. Wichtige Pfade & Volumes
 
 | Volume / Pfad | Inhalt |
 |---|---|
 | `postgres-data` | DB-Files |
 | `recordings-data` → `${LOCAL_STORAGE_PATH}` | Aufnahmen + Thumbnails |
-| `apache-certs` | TLS-Zertifikate (`server.crt`, `server.key`) |
+| `./certs/` (bind mount) | Cloudflare Origin Certs (gitignored) |
 | `wireguard-data` | WG-Konfig + Peer-Keys |
 
 Backup-Empfehlung: alle vier Volumes plus `.env`.

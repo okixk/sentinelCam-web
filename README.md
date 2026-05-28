@@ -1,9 +1,12 @@
 # sentinelCam Web
 
-Browser-first camera capture and gallery service. Runs as a single Docker
-Compose stack with four services: the FastAPI app, an Apache reverse proxy,
-a PostgreSQL database, and a wg-easy WireGuard server for remote access.
-Recordings are stored in a local Docker volume mounted into the web container.
+Browser-first camera capture and gallery service. Runs as a Docker Compose
+stack: a Traefik edge router, a web container that runs Apache in front of
+the FastAPI app, a PostgreSQL database, and a wg-easy WireGuard server for
+remote access. The separately-managed Probe-VA / aarestadt.info stack
+(with its own Apache build) plugs into the same Traefik via a shared
+docker network. Recordings are stored in a local Docker volume mounted
+into the web container.
 
 ## What you get
 
@@ -11,9 +14,10 @@ Recordings are stored in a local Docker volume mounted into the web container.
 - In-browser camera capture (image + video) via `MediaDevices` + `MediaRecorder`
 - Recordings + thumbnails stored on local Docker storage
 - Users, sessions, passkeys, and recording metadata in PostgreSQL
-- Apache in front, terminating TLS (self-signed cert generated on first boot;
-  swap in any cert pair `server.crt` + `server.key` in the `apache-certs`
-  volume to replace it)
+- Traefik as the edge router, terminating TLS with Cloudflare Origin
+  Certificates that you drop into `./certs/`
+- Apache inside the web container serving `/static/` directly and
+  reverse-proxying everything else to uvicorn
 - WireGuard VPN (wg-easy) for remote access
 
 ## Architecture and exposed ports
@@ -22,22 +26,25 @@ Only **three** ports are exposed to the outside world. Everything else lives on
 the internal `sentinelcam` Docker network or on host loopback.
 
 ```text
-                                                    +-----------------+
-                  TCP 80   ---->  Apache  ----+---->|                 |
-                  TCP 443  ---->  (TLS)       |     |  web (FastAPI)  |---> postgres:5432
-   internet  -->                              |     |   on web:3000   |---> /data/recordings (volume)
-                  UDP 1194 ---->  wg-easy ----+     +-----------------+
-                                  (WireGuard)
+                                                       +-------------------------------+
+                  TCP 80   ---->  Traefik  ---Host---->|  web container                |
+                  TCP 443  ---->  (TLS)     header     |  ├─ Apache :80                |---> postgres:5432
+   internet  -->                            routing    |  └─ uvicorn 127.0.0.1:3000    |---> /data/recordings
+                                              |        +-------------------------------+
+                  UDP 1194 --->  wg-easy      |
+                                 (WireGuard)  +------> probe-va container (own Apache build)
 ```
 
-| External port | Service     | Purpose                                              |
-|---------------|-------------|------------------------------------------------------|
-| `80/tcp`      | apache      | HTTP -> 301 to HTTPS                                 |
-| `443/tcp`     | apache      | HTTPS reverse-proxy to web                           |
-| `1194/udp`    | wg-easy     | WireGuard VPN (configurable via `WG_PORT`)           |
-| (none public) | postgres    | Internal-network only                                |
-| (none public) | web         | Internal-network only (Apache talks to it on `:3000`)|
-| `127.0.0.1:51821` | wg-easy admin UI | Host loopback only; reach via SSH tunnel or VPN  |
+| External port     | Service          | Purpose                                                  |
+|-------------------|------------------|----------------------------------------------------------|
+| `80/tcp`          | traefik          | HTTP -> 301 to HTTPS                                     |
+| `443/tcp`         | traefik          | HTTPS, Host-routed to `web` or `probe-va`                |
+| `1194/udp`        | wg-easy          | WireGuard VPN (configurable via `WG_PORT`)               |
+| (none public)     | postgres         | Internal-network only                                    |
+| (none public)     | web              | Reached by Traefik via `proxy-net` on port 80 (Apache)   |
+| (none public)     | probe-va         | Reached by Traefik via `proxy-net` on port 80 (Apache)   |
+| `127.0.0.1:8080`  | traefik dashboard| Host loopback only; reach via SSH tunnel or VPN          |
+| `127.0.0.1:51821` | wg-easy admin UI | Host loopback only; reach via SSH tunnel or VPN          |
 
 > The VPN port is **WireGuard on UDP/1194**. WireGuard speaks WireGuard
 > regardless of the port number it sits on — VPN clients need a
@@ -61,34 +68,46 @@ the internal `sentinelcam` Docker network or on host loopback.
    - `WG_PASSWORD_HASH` - the bcrypt hash from step 1 (keep the single quotes)
    - `WEBAUTHN_RP_ID` - `localhost` for local dev, your DNS name otherwise
 
-3. Bring the stack up:
+3. Drop your Cloudflare Origin Certs into `./certs/` (see
+   `certs/README.md`):
+
+   ```text
+   certs/sentinelcam.crt    certs/sentinelcam.key
+   certs/aarestadt.crt      certs/aarestadt.key
+   ```
+
+   These files are gitignored. The site hostnames must be Cloudflare-proxied
+   ("orange cloud") for browsers to trust the chain. Keep
+   `vpn.sentinelcam.ch` as "DNS only" — Cloudflare does not proxy UDP.
+
+4. Create the shared docker network (one-time) and bring the stack up:
 
    ```bash
+   docker network create proxy-net
    docker compose up -d --build
    ```
 
-4. Open the web app on the host:
+5. Open the web app:
 
-   - `https://localhost/` (Apache serves the self-signed cert generated on
-     first boot — browsers will warn once; accept it, or replace the cert
-     pair in the `apache-certs` volume)
-   - If you set `SC_PUBLIC_HOSTNAME`, open `https://<your-hostname>/`
+   - On `https://<SC_PUBLIC_HOSTNAME>/` once the DNS resolves to your
+     server through Cloudflare
 
-5. Sign in with `ADMIN_USER` / `ADMIN_PASSWORD`. Press **Start camera** on the
+6. Sign in with `ADMIN_USER` / `ADMIN_PASSWORD`. Press **Start camera** on the
    capture page, then **Capture image** or **Start recording**. Files are saved
    in the local Docker volume and show up in the gallery.
 
 ## Admin consoles
 
-The wg-easy admin UI is bound to `127.0.0.1`, so it is reachable from the host
-but not the public internet:
+Both admin surfaces are bound to `127.0.0.1` on the host, so they are
+reachable from the host itself but not the public internet:
 
-- wg-easy admin: <http://127.0.0.1:51821> - log in with the password whose
-  bcrypt hash you set in `WG_PASSWORD_HASH`
+- **Traefik dashboard**: <http://127.0.0.1:8080/dashboard/>
+- **wg-easy admin**: <http://127.0.0.1:51821> — log in with the password
+  whose bcrypt hash you set in `WG_PASSWORD_HASH`
 
-The recommended way to reach it from your laptop is an **SSH tunnel** (or via
-the VPN once a client is configured — see below). Do not publish it to the
-public internet.
+The recommended way to reach them from your laptop is an **SSH tunnel**
+(or via the VPN once a client is configured — see below). Do not publish
+either to the public internet.
 
 ## VPN access (WireGuard)
 
@@ -178,15 +197,23 @@ the server, so you can reach:
 
 ## TLS
 
-- Default: the Apache entrypoint generates a 10-year self-signed certificate
-  with `CN=<SC_PUBLIC_HOSTNAME>` + a SAN for `localhost` / `127.0.0.1`. The
-  cert lives in the `apache-certs` named Docker volume.
-- Production: drop your real `server.crt` and `server.key` into that volume
-  (e.g. via `docker compose cp` or by mounting the volume's path) and restart
-  Apache. The entrypoint only generates a cert when one is missing.
-- For Let's Encrypt: terminate ACME externally (e.g. `certbot`) and copy the
-  resulting cert + key into the volume. Apache itself does not run an ACME
-  client in this stack.
+TLS is terminated by Traefik using **Cloudflare Origin Certificates** that
+you drop into `./certs/` (gitignored). One cert pair per zone:
+
+```text
+certs/sentinelcam.crt    certs/sentinelcam.key
+certs/aarestadt.crt      certs/aarestadt.key
+```
+
+Generate them in the Cloudflare dashboard under **SSL/TLS → Origin Server
+→ Create Certificate**. Cloudflare Origin Certs are signed by Cloudflare's
+private origin CA, so browsers only trust them when the connection comes
+through Cloudflare's edge — make sure the corresponding DNS records are
+Cloudflare-**proxied** ("orange cloud"). `vpn.sentinelcam.ch` must stay
+"DNS only" because Cloudflare does not proxy UDP.
+
+There is no ACME client in this stack — Origin Certs are long-lived
+(15-year default).
 
 ## Running tests
 
@@ -201,22 +228,25 @@ python -m unittest discover -s tests
 
 ```text
 app/
-  auth/        password + WebAuthn flow
-  dashboard/   admin routes (users, sessions, ops)
-  gallery/     gallery pages and JSON feed
-  recording/   upload + serve + delete (local-storage backed)
-  config.py    typed settings (env-driven)
-  database.py  PostgreSQL pool + aiosqlite-compatible shim
-  storage.py   local filesystem storage helpers
-  main.py      FastAPI app + middleware
-apache/
-  Dockerfile   httpd:2.4-alpine + ssl/proxy/headers modules
-  entrypoint.sh self-signed cert generator
-  httpd-vhosts.conf  HTTPS reverse-proxy config
+  auth/         password + WebAuthn flow
+  dashboard/    admin routes (users, sessions, ops)
+  gallery/      gallery pages and JSON feed
+  recording/    upload + serve + delete (local-storage backed)
+  config.py     typed settings (env-driven)
+  database.py   PostgreSQL pool + aiosqlite-compatible shim
+  storage.py    local filesystem storage helpers
+  main.py       FastAPI app + middleware
+traefik/
+  traefik.yml   static Traefik config (entrypoints, providers, dashboard)
+  dynamic/      file-provider configs (Cloudflare Origin Cert wiring)
+web-apache/
+  sentinelcam.conf  Apache vhost serving /static/ and proxying to uvicorn
+  supervisord.conf  supervisord program defs for Apache + uvicorn
+certs/          Cloudflare Origin Cert dropzone (gitignored)
 static/
 templates/
 docker-compose.yml
-Dockerfile
+Dockerfile     Web container: Apache + uvicorn under supervisord
 ```
 
 ## Environment variables
@@ -229,7 +259,7 @@ Dockerfile
 | `LOCKOUT_THRESHOLD` / `LOCKOUT_DURATION_MINUTES` | First-start user lockout defaults |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
 | `LOCAL_STORAGE_PATH` | Recording storage path inside the web container |
-| `SC_PUBLIC_HOSTNAME` | DNS name Apache serves; used for the self-signed cert CN/SAN (default `sentinelcam.local`) |
+| `SC_PUBLIC_HOSTNAME` | DNS name used as the Traefik Host-router rule for the FastAPI app (default `sentinelcam.local`) |
 | `WG_HOST` | Hostname/IP that VPN clients dial |
 | `WG_PORT` | WireGuard UDP port (default 1194) |
 | `WG_PASSWORD_HASH` | Bcrypt hash for the wg-easy admin UI |
