@@ -129,12 +129,15 @@ services:
     expose:
       - "80"
     healthcheck:
+      # /readyz verifies the DB is reachable (returns 503 otherwise) so the
+      # container is marked unhealthy when a dependency is down, not just when
+      # the process is dead. urlopen raises on 503 -> non-zero exit -> unhealthy.
       test: ["CMD", "python", "-c",
-        "import urllib.request; urllib.request.urlopen('http://localhost/healthz', timeout=5)"]
+        "import urllib.request; urllib.request.urlopen('http://localhost/readyz', timeout=5)"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   wg-easy:
     # WireGuard VPN. Default port is 1194/udp (the same number OpenVPN

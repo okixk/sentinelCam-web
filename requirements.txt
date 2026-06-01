@@ -9,5 +9,10 @@ jinja2>=3.1.6
 Pillow>=12.2
 opencv-python-headless>=4.13
 pydantic-settings>=2.14
-aiortc>=1.10
-av>=14.0
+# Live view is fragmented-MP4 produced by the bundled `ffmpeg` binary
+# (-c:v copy, no re-encode), so aiortc/PyAV are no longer needed here.
+#
+# For reproducible builds, generate a hash-locked file from this one and
+# install with it (see SETUP.md "Reproducible builds"):
+#   pip install pip-tools && pip-compile --generate-hashes -o requirements.lock requirements.txt
+#   pip install --require-hashes -r requirements.lock

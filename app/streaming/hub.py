@@ -1,20 +1,25 @@
 """In-memory frame distribution.
 
-Each camera has its own :class:`FrameHub` that holds the latest "raw" frame
-(direct from the Pi) and the latest "processed" frame (sent back by the
-worker with the detection overlay). Browser MJPEG / WebRTC viewers wait on
-the processed lane and fall back to the raw lane when no worker is online.
+Each camera has its own :class:`FrameHub` holding three lanes:
 
-The hubs live for the lifetime of the process and are looked up by camera
-id via :func:`frame_hubs.get`.
+- ``raw``       — the latest JPEG straight from the camera/edge (fallback view),
+- ``processed`` — the latest JPEG sent back by the worker with the detection
+  overlay (used for snapshots, clips and the MJPEG fallback),
+- ``h264``      — a short rolling buffer of H.264 Annex-B access units sent back
+  by the worker, used for the low-latency live view. The web server relays these
+  to browsers as fragmented-MP4 (``ffmpeg -c:v copy``) without re-encoding.
+
+The hubs live for the lifetime of the process and are looked up by camera id
+via :func:`frame_hubs.get`.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 
 log = logging.getLogger("sentinelCam.hub")
@@ -29,16 +34,97 @@ class _Slot:
     total_frames: int = 0
 
 
-class FrameHub:
-    """Stores the latest raw + processed JPEG for one camera."""
+class _H264Lane:
+    """Rolling buffer of H.264 access units with keyframe-aware subscription.
 
-    __slots__ = ("camera_id", "_raw", "_processed", "_lock")
+    Keeps the last ``maxlen`` access units so a freshly-joined viewer can start
+    at the most recent keyframe without waiting a full GOP. The web also asks
+    the worker for a fresh keyframe on join, so this buffer is mostly a jitter
+    cushion, not a long backlog.
+    """
+
+    __slots__ = ("_buf", "_seq", "_waiter", "received_at", "total")
+
+    def __init__(self, maxlen: int = 300) -> None:
+        self._buf: deque[tuple[int, bytes, bool]] = deque(maxlen=maxlen)
+        self._seq = 0
+        self._waiter = asyncio.Event()
+        self.received_at = 0.0
+        self.total = 0
+
+    def publish(self, access_unit: bytes, is_keyframe: bool) -> None:
+        if not access_unit:
+            return
+        self._seq += 1
+        self._buf.append((self._seq, access_unit, bool(is_keyframe)))
+        self.total += 1
+        self.received_at = time.time()
+        old, self._waiter = self._waiter, asyncio.Event()
+        old.set()
+
+    def _last_keyframe_tail(self) -> tuple[list[tuple[int, bytes]], int]:
+        items = list(self._buf)
+        kf_idx = None
+        for i in range(len(items) - 1, -1, -1):
+            if items[i][2]:
+                kf_idx = i
+                break
+        if kf_idx is None:
+            return [], (items[-1][0] if items else 0)
+        tail = items[kf_idx:]
+        return [(s, au) for (s, au, _kf) in tail], tail[-1][0]
+
+    async def _after(self, last_seq: int, timeout: float) -> tuple[list[tuple[int, bytes, bool]], int]:
+        fresh = [t for t in self._buf if t[0] > last_seq]
+        if fresh:
+            return fresh, fresh[-1][0]
+        waiter = self._waiter
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return [], last_seq
+        fresh = [t for t in self._buf if t[0] > last_seq]
+        return fresh, (fresh[-1][0] if fresh else last_seq)
+
+    async def subscribe(self, *, idle_timeout: float = 10.0) -> AsyncIterator[bytes]:
+        """Yield Annex-B access units, starting from a keyframe.
+
+        Emits the current keyframe tail immediately if one is buffered;
+        otherwise waits for the next keyframe (skipping leading delta frames so
+        the downstream ffmpeg copy always starts on an IDR with parameter sets).
+        Stops if no new unit arrives within ``idle_timeout`` seconds.
+        """
+        tail, last_seq = self._last_keyframe_tail()
+        seen_keyframe = bool(tail)
+        for _seq, au in tail:
+            yield au
+
+        while True:
+            fresh, last_seq = await self._after(last_seq, timeout=idle_timeout)
+            if not fresh:
+                # idle timeout — nothing new; let the caller decide to stop.
+                return
+            for _seq, au, is_kf in fresh:
+                if not seen_keyframe:
+                    if not is_kf:
+                        continue
+                    seen_keyframe = True
+                yield au
+
+
+class FrameHub:
+    """Stores the latest raw + processed JPEG and a rolling H.264 lane."""
+
+    __slots__ = ("camera_id", "_raw", "_processed", "_h264", "_lock")
 
     def __init__(self, camera_id: int) -> None:
         self.camera_id = int(camera_id)
         self._raw = _Slot()
         self._processed = _Slot()
+        self._h264 = _H264Lane()
         self._lock = asyncio.Lock()
+
+    # ----- JPEG lanes -----------------------------------------------------
 
     async def publish_raw(self, payload: bytes, capture_ms: int) -> None:
         await self._publish(self._raw, payload, capture_ms)
@@ -54,8 +140,6 @@ class FrameHub:
             slot.capture_ms = int(capture_ms)
             slot.received_at = time.time()
             slot.total_frames += 1
-            # Wake everyone waiting on the previous frame, then arm a fresh
-            # event so the next call to wait_next() blocks until publish.
             old, slot.waiter = slot.waiter, asyncio.Event()
             old.set()
 
@@ -66,7 +150,6 @@ class FrameHub:
         return await self._wait(self._raw, last_capture_ms, timeout)
 
     async def _wait(self, slot: _Slot, last_capture_ms: int, timeout: float) -> Optional[tuple[bytes, int]]:
-        # Fast path: we already have a fresher frame.
         if slot.payload is not None and slot.capture_ms > last_capture_ms:
             return slot.payload, slot.capture_ms
         waiter = slot.waiter
@@ -84,13 +167,28 @@ class FrameHub:
     def latest_raw(self) -> tuple[Optional[bytes], int]:
         return self._raw.payload, self._raw.capture_ms
 
+    # ----- H.264 lane -----------------------------------------------------
+
+    def publish_h264(self, access_unit: bytes, is_keyframe: bool) -> None:
+        self._h264.publish(access_unit, is_keyframe)
+
+    def subscribe_h264(self, *, idle_timeout: float = 10.0) -> AsyncIterator[bytes]:
+        return self._h264.subscribe(idle_timeout=idle_timeout)
+
+    def has_h264(self) -> bool:
+        return self._h264.total > 0 and (time.time() - self._h264.received_at) < 10.0
+
+    # ----- stats ----------------------------------------------------------
+
     def stats(self) -> dict[str, object]:
         return {
             "camera_id": self.camera_id,
             "raw_frames": self._raw.total_frames,
             "processed_frames": self._processed.total_frames,
+            "h264_units": self._h264.total,
             "raw_last_at": self._raw.received_at or None,
             "processed_last_at": self._processed.received_at or None,
+            "h264_last_at": self._h264.received_at or None,
             "raw_bytes_last": len(self._raw.payload) if self._raw.payload else 0,
             "processed_bytes_last": len(self._processed.payload) if self._processed.payload else 0,
         }

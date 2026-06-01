@@ -19,11 +19,14 @@ from app.recording.live_capture import (
     record_clip_from_hub,
     snapshot_from_hub,
 )
-from app.streaming import webrtc
+from app.streaming import fmp4
+from app.streaming.h264 import is_keyframe, looks_like_annexb
 from app.streaming.hub import frame_hubs
 from app.streaming.protocol import (
     HEADER_LEN,
+    PROTOCOL_VERSION,
     MSG_PROCESSED_FRAME,
+    MSG_PROCESSED_H264,
     MSG_RAW_FRAME,
     Frame,
     decode,
@@ -40,6 +43,7 @@ from app.streaming.worker_link import worker_link
 
 
 log = logging.getLogger("sentinelCam.streaming")
+AUDIT = logging.getLogger("sentinelCam.audit")
 router = APIRouter(tags=["streaming"])
 
 
@@ -48,6 +52,7 @@ router = APIRouter(tags=["streaming"])
 # ---------------------------------------------------------------------------
 
 _MAX_FRAME_BYTES = 4 * 1024 * 1024  # 4 MiB ceiling per JPEG, well above 1080p
+_MAX_H264_AU_BYTES = 2 * 1024 * 1024  # 2 MiB ceiling per H.264 access unit
 
 
 def _extract_bearer(ws: WebSocket) -> str:
@@ -129,11 +134,21 @@ async def worker_connect(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+    evicted = worker_link.current()
     conn = await worker_link.attach(worker_id, ws)
     log.info("worker %d connected", worker_id)
+    AUDIT.info(json.dumps({
+        "event": "worker.connect",
+        "worker_id": worker_id,
+        # Surface a takeover: a leaked token connecting evicts the live worker.
+        "evicted_worker_id": evicted.worker_id if evicted else None,
+        "timestamp": time.time(),
+    }))
     try:
-        # Initial hello so the worker knows the channel is up.
-        await ws.send_text(json.dumps({"type": "hello", "worker_id": worker_id, "ts": time.time()}))
+        # Initial hello so the worker knows the channel is up (+ protocol version).
+        await ws.send_text(json.dumps({
+            "type": "hello", "worker_id": worker_id, "proto": PROTOCOL_VERSION, "ts": time.time(),
+        }))
 
         while True:
             message = await ws.receive()
@@ -166,12 +181,18 @@ async def worker_connect(ws: WebSocket) -> None:
 
 
 async def _handle_worker_binary(frame: Frame) -> None:
-    if frame.msg_type != MSG_PROCESSED_FRAME:
-        return
-    hub = frame_hubs.get(frame.camera_id)
-    if hub is None:
-        hub = await frame_hubs.get_or_create(frame.camera_id)
-    await hub.publish_processed(frame.payload, frame.capture_ms)
+    # Validate payloads server-side: a leaked worker token must not be able to
+    # inject oversized or malformed frames to spoof feeds / exhaust memory.
+    if frame.msg_type == MSG_PROCESSED_FRAME:
+        if len(frame.payload) > _MAX_FRAME_BYTES or not _looks_like_jpeg(frame.payload):
+            return
+        hub = frame_hubs.get(frame.camera_id) or await frame_hubs.get_or_create(frame.camera_id)
+        await hub.publish_processed(frame.payload, frame.capture_ms)
+    elif frame.msg_type == MSG_PROCESSED_H264:
+        if len(frame.payload) > _MAX_H264_AU_BYTES or not looks_like_annexb(frame.payload):
+            return
+        hub = frame_hubs.get(frame.camera_id) or await frame_hubs.get_or_create(frame.camera_id)
+        hub.publish_h264(frame.payload, is_keyframe(frame.payload))
 
 
 async def _handle_worker_text(conn, text: str) -> None:
@@ -181,6 +202,17 @@ async def _handle_worker_text(conn, text: str) -> None:
         return
     if not isinstance(msg, dict):
         return
+    peer_proto = msg.get("proto")
+    if peer_proto is not None and not getattr(conn, "_proto_warned", False):
+        try:
+            if int(peer_proto) != PROTOCOL_VERSION:
+                log.warning(
+                    "worker %s protocol mismatch: worker=%s web=%s — frames may mis-decode",
+                    conn.worker_id, peer_proto, PROTOCOL_VERSION,
+                )
+        except (TypeError, ValueError):
+            pass
+        conn._proto_warned = True  # type: ignore[attr-defined]
     kind = str(msg.get("type") or "").lower()
     if kind == "heartbeat":
         conn.last_heartbeat_at = time.time()
@@ -309,31 +341,6 @@ async def list_active_cameras(user: User = Depends(get_current_user)):
 
 
 # ---------------------------------------------------------------------------
-#  WebRTC viewer endpoint
-# ---------------------------------------------------------------------------
-
-class _WebRTCOffer(BaseModel):
-    sdp: str
-    type: str
-
-    @field_validator("sdp")
-    @classmethod
-    def _validate_sdp(cls, value: str) -> str:
-        value = (value or "").strip()
-        if not value or len(value) > 64 * 1024:
-            raise ValueError("invalid SDP")
-        return value
-
-    @field_validator("type")
-    @classmethod
-    def _validate_type(cls, value: str) -> str:
-        value = (value or "").strip().lower()
-        if value != "offer":
-            raise ValueError("type must be 'offer'")
-        return value
-
-
-# ---------------------------------------------------------------------------
 #  Manual snapshot / clip recording from the live stream
 # ---------------------------------------------------------------------------
 
@@ -393,21 +400,25 @@ async def camera_clip(
     return JSONResponse({"ok": True, "id": recording_id}, status_code=201)
 
 
-@router.post("/api/cameras/{cam_id}/webrtc/offer")
-async def camera_webrtc_offer(
-    cam_id: int,
-    body: _WebRTCOffer,
-    user: User = Depends(get_current_user),
-    _csrf=Depends(check_csrf),
-):
+# ---------------------------------------------------------------------------
+#  Low-latency live view: fragmented-MP4 (H.264) over HTTPS, MSE in the browser
+# ---------------------------------------------------------------------------
+
+@router.get("/api/cameras/{cam_id}/live.mp4")
+async def camera_live_mp4(cam_id: int, user: User = Depends(get_current_user)) -> StreamingResponse:
+    """Stream the worker's H.264 lane to the browser as fragmented-MP4.
+
+    The web server never decodes/re-encodes (ffmpeg ``-c:v copy``); all encode
+    cost stays on the worker's GPU. Returns 404 when no H.264 is flowing so the
+    browser can fall back to MJPEG.
+    """
     hub = frame_hubs.get(cam_id)
-    if hub is None:
-        raise HTTPException(404, "Camera offline")
-    try:
-        answer = await webrtc.handle_offer(hub, body.sdp, body.type)
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc))
-    except Exception:
-        log.exception("WebRTC negotiation failed for camera %d", cam_id)
-        raise HTTPException(400, "WebRTC negotiation failed")
-    return JSONResponse(answer)
+    if hub is None or not hub.has_h264():
+        raise HTTPException(404, "No live H.264 stream for this camera")
+    if fmp4.at_capacity():
+        raise HTTPException(503, "max concurrent live viewers reached")
+    response = StreamingResponse(fmp4.live_mp4(hub), media_type="video/mp4")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response

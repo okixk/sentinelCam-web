@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # WebAuthn
     webauthn_rp_id: str = "localhost"
     webauthn_rp_name: str = "sentinelCam"
+    # Canonical public origin, e.g. "https://sentinelcam.ch". When set (or
+    # derivable from public + webauthn_rp_id) the app pins WebAuthn origin/RP-ID,
+    # the secure-cookie flag, and CSRF same-origin checks to THIS value instead
+    # of trusting client-supplied Host / X-Forwarded-* headers.
+    public_origin: str = Field(default="", validation_alias=AliasChoices("SC_PUBLIC_ORIGIN"))
 
     # Recordings
     max_upload_size_mb: int = 100
@@ -63,6 +68,27 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return value.strip()
         return value
+
+    @property
+    def canonical_origin(self) -> str | None:
+        """The trusted public origin (scheme://host) or None in local/dev mode."""
+        explicit = (self.public_origin or "").strip().rstrip("/")
+        if explicit:
+            return explicit
+        rp = (self.webauthn_rp_id or "").strip()
+        if self.public and rp and rp != "localhost":
+            return f"https://{rp}"
+        return None
+
+    @property
+    def canonical_rp_id(self) -> str | None:
+        """WebAuthn RP-ID (registrable domain) derived from the canonical origin."""
+        origin = self.canonical_origin
+        if not origin:
+            return None
+        from urllib.parse import urlparse
+
+        return urlparse(origin).hostname or (self.webauthn_rp_id or None)
 
     @property
     def postgres_dsn(self) -> str:

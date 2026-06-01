@@ -1,12 +1,12 @@
 /* viewer.js — Live page viewer + capture controls.
  *
- * Tries WebRTC first, falls back to MJPEG on negotiation errors, ICE
- * stalls (>5s), or "failed"/"disconnected" peer state. The transport
- * pinner, reconnect button, camera picker, snapshot/record buttons, and
- * fullscreen toggle live inside the new HUD-style UI. Hidden <select>
- * elements still hold the canonical state so the WebRTC/MJPEG logic
- * below can read camera id / transport / clip duration without caring
- * about which control surface the user touched.
+ * Live transport is fragmented-MP4 (H.264) over HTTPS played via Media
+ * Source Extensions. The worker GPU-encodes H.264; the web server relays
+ * it with `ffmpeg -c:v copy` (no re-encode). This works over 443/Cloudflare
+ * for both remote and VPN clients (WebRTC's UDP cannot traverse that).
+ * On any MSE/codec/stream error — or when the user pins "MJPEG" — it falls
+ * back to the MJPEG <img> stream. Hidden <select> elements hold the
+ * canonical state (camera id / transport / clip duration).
  */
 (function () {
   const csrf = () => document.cookie.match(/csrf_token=([^;]+)/)?.[1] || "";
@@ -49,10 +49,11 @@
   const appUI = window.AppUI || {};
   const toast = typeof appUI.toast === "function" ? appUI.toast : () => null;
 
-  let currentPc = null;
+  let currentMse = null;       // active MediaSource
+  let currentAbort = null;     // AbortController for the live.mp4 fetch
   let currentCameraId = null;
   let currentCameraName = "";
-  let webrtcFailedFor = new Set();
+  let fmp4FailedFor = new Set();
   let recordingTimerId = 0;
   let knownCameras = [];
   const PROGRESS_CIRC = 97.4; // matches the SVG r=15.5 stroke-dasharray
@@ -104,16 +105,19 @@
   //  WebRTC / MJPEG plumbing
   // -----------------------------
 
-  function closePeer() {
-    if (currentPc) {
-      try { currentPc.close(); } catch (_) {}
-      currentPc = null;
+  function closeFmp4() {
+    if (currentAbort) {
+      try { currentAbort.abort(); } catch (_) {}
+      currentAbort = null;
     }
-    if (els.video.srcObject) {
-      const tracks = els.video.srcObject.getTracks?.() || [];
-      tracks.forEach(t => { try { t.stop(); } catch (_) {} });
-      els.video.srcObject = null;
+    if (currentMse) {
+      try { if (currentMse.readyState === "open") currentMse.endOfStream(); } catch (_) {}
+      currentMse = null;
     }
+    try {
+      els.video.removeAttribute("src");
+      els.video.load?.();
+    } catch (_) {}
   }
 
   function closeMjpeg() {
@@ -249,73 +253,122 @@
   });
 
   // -----------------------------
-  //  WebRTC / MJPEG connect
+  //  fMP4 (MSE) / MJPEG connect
   // -----------------------------
 
-  async function tryWebRTC(camId) {
-    closePeer();
-    const pc = new RTCPeerConnection({ iceServers: [] });
-    currentPc = pc;
-    const stalledTimer = window.setTimeout(() => {
-      if (currentPc !== pc) return;
-      if (!els.video.videoWidth) {
-        console.warn("WebRTC stalled, falling back");
-        try { pc.close(); } catch (_) {}
-        if (currentPc === pc) currentPc = null;
-        webrtcFailedFor.add(camId);
-        if ((els.transport?.value || "auto") === "auto") {
-          startMjpeg(camId, "WebRTC stalled — falling back to MJPEG.");
-        }
-      }
-    }, 5000);
+  const MSE_SUPPORTED = typeof window.MediaSource !== "undefined";
+  const LIVE_BUFFER_GOAL_S = 6;   // evict buffered media older than this
+  const LIVE_EDGE_LAG_S = 2.5;    // jump to the live edge if we drift this far back
 
-    pc.addEventListener("track", event => {
-      if (event.track.kind === "video") {
-        els.video.srcObject = event.streams[0];
-        showVideo();
-        setStatus("Live · WebRTC", "ok");
-        setHudMode("WebRTC");
-        window.clearTimeout(stalledTimer);
+  // Read the avc1 codec string straight out of the fMP4 init segment's avcC box
+  // so the SourceBuffer mime matches the actual stream profile/level exactly.
+  function findAvcCodec(bytes) {
+    for (let i = 0; i + 8 < bytes.length; i++) {
+      if (bytes[i] === 0x61 && bytes[i + 1] === 0x76 && bytes[i + 2] === 0x63 && bytes[i + 3] === 0x43) {
+        const hex = n => n.toString(16).padStart(2, "0");
+        return `avc1.${hex(bytes[i + 5])}${hex(bytes[i + 6])}${hex(bytes[i + 7])}`;
       }
+    }
+    return null;
+  }
+
+  async function tryFmp4(camId) {
+    closeFmp4();
+    if (!MSE_SUPPORTED) throw new Error("MediaSource not supported");
+
+    const mediaSource = new MediaSource();
+    currentMse = mediaSource;
+    els.video.muted = true;
+    els.video.autoplay = true;
+    els.video.playsInline = true;
+    els.video.src = URL.createObjectURL(mediaSource);
+
+    await new Promise((resolve, reject) => {
+      const to = window.setTimeout(() => reject(new Error("sourceopen timeout")), 5000);
+      mediaSource.addEventListener("sourceopen", () => { window.clearTimeout(to); resolve(); }, { once: true });
     });
-    pc.addEventListener("connectionstatechange", () => {
-      if (currentPc !== pc) return;
-      if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-        window.clearTimeout(stalledTimer);
-        if (pc.connectionState !== "closed") {
-          webrtcFailedFor.add(camId);
+    if (currentMse !== mediaSource) throw new Error("superseded");
+
+    const ctrl = new AbortController();
+    currentAbort = ctrl;
+    const resp = await fetch(`/api/cameras/${camId}/live.mp4`, { cache: "no-store", signal: ctrl.signal });
+    if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
+
+    showVideo();
+    setStatus("Live · H.264", "ok");
+    setHudMode("H.264");
+    els.video.play?.().catch(() => {});
+
+    // Watchdog: if no frame decodes within 6s the pipeline is wedged.
+    const stalled = window.setTimeout(() => {
+      if (currentAbort === ctrl && !els.video.videoWidth) {
+        try { ctrl.abort(); } catch (_) {}
+        fmp4FailedFor.add(camId);
+        if (currentCameraId === camId && (els.transport?.value || "auto") === "auto") {
+          startMjpeg(camId, "Live H.264 stalled — switched to MJPEG.");
         }
-        if (currentPc === pc) {
-          currentPc = null;
-          if ((els.transport?.value || "auto") === "auto") {
-            startMjpeg(camId, "WebRTC dropped — switched to MJPEG.");
-          } else if ((els.transport?.value || "auto") === "webrtc") {
-            setStatus("WebRTC disconnected.", "error");
-            showPlaceholder("WebRTC disconnected", "Switch transport to MJPEG or hit Reconnect.");
+      }
+    }, 6000);
+    els.video.addEventListener("loadeddata", () => window.clearTimeout(stalled), { once: true });
+
+    const reader = resp.body.getReader();
+    let sourceBuffer = null;
+    const queue = [];
+    let initBuf = new Uint8Array(0);
+
+    const pump = () => {
+      if (!sourceBuffer || sourceBuffer.updating || !queue.length) return;
+      try { sourceBuffer.appendBuffer(queue.shift()); } catch (err) { console.warn("appendBuffer failed", err); }
+    };
+    const trim = () => {
+      try {
+        if (!sourceBuffer || sourceBuffer.updating || !els.video.buffered.length) return;
+        const end = els.video.buffered.end(els.video.buffered.length - 1);
+        const start = els.video.buffered.start(0);
+        if (end - start > LIVE_BUFFER_GOAL_S) sourceBuffer.remove(start, end - LIVE_BUFFER_GOAL_S);
+        if (end - els.video.currentTime > LIVE_EDGE_LAG_S) els.video.currentTime = end - 0.3;
+      } catch (_) {}
+    };
+
+    (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || currentAbort !== ctrl) break;
+          if (!sourceBuffer) {
+            const merged = new Uint8Array(initBuf.length + value.length);
+            merged.set(initBuf, 0); merged.set(value, initBuf.length);
+            initBuf = merged;
+            const codec = findAvcCodec(initBuf);
+            if (!codec) continue;
+            const mime = `video/mp4; codecs="${codec}"`;
+            if (!MediaSource.isTypeSupported(mime)) throw new Error("codec unsupported: " + mime);
+            sourceBuffer = mediaSource.addSourceBuffer(mime);
+            try { sourceBuffer.mode = "sequence"; } catch (_) {}
+            sourceBuffer.addEventListener("updateend", () => { pump(); trim(); });
+            queue.push(initBuf);
+            initBuf = new Uint8Array(0);
+            pump();
+          } else {
+            queue.push(value);
+            pump();
+          }
+        }
+      } catch (err) {
+        if (currentAbort === ctrl) {
+          window.clearTimeout(stalled);
+          console.warn("fMP4 stream error", err);
+          fmp4FailedFor.add(camId);
+          if (currentCameraId === camId && (els.transport?.value || "auto") === "auto") {
+            startMjpeg(camId, "Live H.264 dropped — switched to MJPEG.");
           }
         }
       }
-    });
-
-    pc.addTransceiver("video", { direction: "recvonly" });
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    const resp = await fetch(`/api/cameras/${camId}/webrtc/offer`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
-    });
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      const msg = data?.detail?.error || data?.detail || data?.error || ("HTTP " + resp.status);
-      throw new Error(msg);
-    }
-    const answer = await resp.json();
-    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    })();
   }
 
   function startMjpeg(camId, statusText) {
-    closePeer();
+    closeFmp4();
     const url = `/api/cameras/${camId}/stream.mjpg?ts=${Date.now()}`;
     els.mjpeg.src = url;
     showMjpeg();
@@ -344,22 +397,22 @@
       startMjpeg(camId);
       return;
     }
-    if (mode === "auto" && webrtcFailedFor.has(camId)) {
-      startMjpeg(camId, "WebRTC failed earlier — staying on MJPEG.");
+    if (mode === "auto" && fmp4FailedFor.has(camId)) {
+      startMjpeg(camId, "Live H.264 failed earlier — staying on MJPEG.");
       return;
     }
 
     try {
-      await tryWebRTC(camId);
+      await tryFmp4(camId);
     } catch (err) {
-      console.warn("WebRTC failed", err);
-      webrtcFailedFor.add(camId);
-      if (mode === "webrtc") {
-        setStatus("WebRTC failed: " + err.message, "error");
-        showPlaceholder("WebRTC failed", "Switch transport to Auto or MJPEG.");
+      console.warn("fMP4 failed", err);
+      fmp4FailedFor.add(camId);
+      if (mode === "fmp4") {
+        setStatus("Live H.264 failed: " + err.message, "error");
+        showPlaceholder("Live H.264 failed", "Switch transport to Auto or MJPEG.");
         return;
       }
-      startMjpeg(camId, "WebRTC failed — falling back to MJPEG.");
+      startMjpeg(camId, "Live H.264 unavailable — using MJPEG.");
     }
   }
 
@@ -368,7 +421,7 @@
       const cameras = await fetchCameras();
       const camId = renderCameraOptions(cameras);
       if (camId == null) {
-        closePeer();
+        closeFmp4();
         closeMjpeg();
         showPlaceholder(
           "No cameras configured",
@@ -533,14 +586,14 @@
     radio.addEventListener("change", () => {
       if (!radio.checked) return;
       els.transport.value = radio.value;
-      webrtcFailedFor.delete(currentCameraId);
+      fmp4FailedFor.delete(currentCameraId);
       if (currentCameraId) connectToCamera(currentCameraId);
     });
   });
 
   els.reconnect?.addEventListener("click", () => {
     closeSettingsMenu();
-    webrtcFailedFor.delete(currentCameraId);
+    fmp4FailedFor.delete(currentCameraId);
     if (currentCameraId) connectToCamera(currentCameraId);
   });
 
@@ -577,7 +630,7 @@
   });
 
   window.addEventListener("beforeunload", () => {
-    closePeer();
+    closeFmp4();
     closeMjpeg();
   });
 

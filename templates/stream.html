@@ -38,8 +38,8 @@
           <div class="live-settings-menu" id="liveSettingsMenu" role="menu" hidden>
             <div class="live-menu-section" role="group" aria-label="Transport mode">
               <p class="live-menu-label">Transport</p>
-              <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="auto" checked> Auto · WebRTC, MJPEG fallback</label>
-              <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="webrtc"> WebRTC only</label>
+              <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="auto" checked> Auto · H.264, MJPEG fallback</label>
+              <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="fmp4"> H.264 only</label>
               <label class="live-menu-item"><input type="radio" name="viewerTransportChoice" value="mjpeg"> MJPEG only</label>
             </div>
             <div class="live-menu-divider"></div>
@@ -47,7 +47,7 @@
           </div>
           <select id="viewerTransport" hidden tabindex="-1" aria-hidden="true">
             <option value="auto" selected>Auto</option>
-            <option value="webrtc">WebRTC only</option>
+            <option value="fmp4">H.264 only</option>
             <option value="mjpeg">MJPEG only</option>
           </select>
         </div>

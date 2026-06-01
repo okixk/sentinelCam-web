@@ -36,15 +36,33 @@ def _audit(event: str, **kwargs) -> None:
 
 
 def _request_is_secure(request: Request) -> bool:
+    # In production we pin to the canonical HTTPS origin and do NOT trust the
+    # client-supplied X-Forwarded-Proto (which could downgrade the secure flag).
+    canonical = settings.canonical_origin
+    if canonical:
+        return canonical.startswith("https://")
     forwarded_proto = (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower()
     return request.url.scheme == "https" or forwarded_proto == "https"
 
 
 def _effective_origin(request: Request) -> str:
-    """Origin as the browser sees it — must account for HTTPS termination upstream."""
+    """Origin as the browser sees it.
+
+    Pinned to the configured canonical origin in production so a spoofed Host /
+    X-Forwarded-Host cannot weaken WebAuthn origin binding. Falls back to the
+    request-derived origin only in local/dev mode (no canonical configured).
+    """
+    canonical = settings.canonical_origin
+    if canonical:
+        return canonical
     scheme = "https" if _request_is_secure(request) else request.url.scheme
     host = request.headers.get("x-forwarded-host") or request.url.netloc
     return f"{scheme}://{host}"
+
+
+def _effective_rp_id(request: Request) -> str:
+    """WebAuthn RP-ID, pinned to the canonical domain in production."""
+    return settings.canonical_rp_id or request.url.hostname or settings.webauthn_rp_id
 
 
 def _request_fingerprint(request: Request) -> str:
@@ -181,16 +199,13 @@ async def login(request: Request, body: LoginRequest):
 
     now = time.time()
     locked_until = user_row["locked_until"]
-    if locked_until and locked_until > now:
-        _audit("auth.login.failure", username=body.username, ip=ip, reason="locked")
-        return JSONResponse(
-            {"ok": False, "error": "Invalid credentials"},
-            status_code=401,
-        )
-
+    # Verify the password first. The per-account lockout below throttles brute
+    # force on WRONG passwords only; a correct password bypasses it. This way an
+    # attacker who knows a username cannot lock the legitimate user out of their
+    # own account (per-IP rate limiting still caps attempt volume).
     if not verify_password(body.password, user_row["password_hash"]):
         attempts = user_row["failed_login_attempts"] + 1
-        new_locked_until = None
+        new_locked_until = locked_until if (locked_until and locked_until > now) else None
         if attempts >= security_config.lockout_threshold:
             new_locked_until = now + security_config.lockout_duration_minutes * 60
             _audit("auth.lockout", username=body.username, ip=ip)
@@ -260,7 +275,7 @@ async def webauthn_register_begin(
         rows = await cursor.fetchall()
         existing = [bytes(r["credential_id"]) for r in rows]
 
-    rp_id = request.url.hostname or settings.webauthn_rp_id
+    rp_id = _effective_rp_id(request)
     options = generate_registration_options(user.id, user.username, existing, rp_id=rp_id)
     challenge_b64 = options.get("challenge", "")
     from webauthn.helpers import base64url_to_bytes
@@ -284,7 +299,7 @@ async def webauthn_register_complete(
         raise HTTPException(400, "No pending registration challenge")
 
     origin = _effective_origin(request)
-    rp_id = request.url.hostname or settings.webauthn_rp_id
+    rp_id = _effective_rp_id(request)
     try:
         result = verify_registration_response(
             challenge=challenge,
@@ -340,7 +355,7 @@ async def webauthn_login_begin(request: Request):
     # passkeys or doesn't exist. This avoids leaking user existence; the
     # ceremony will fail later with a generic "Authentication failed".
     credentials = [{"credential_id": bytes(r["credential_id"])} for r in rows]
-    rp_id = request.url.hostname or settings.webauthn_rp_id
+    rp_id = _effective_rp_id(request)
     options = generate_authentication_options(credentials, rp_id=rp_id)
 
     from webauthn.helpers import base64url_to_bytes
@@ -394,7 +409,7 @@ async def webauthn_login_complete(request: Request):
     origin = _effective_origin(request)
     matched_row = None
     new_sign_count = 0
-    rp_id = request.url.hostname or settings.webauthn_rp_id
+    rp_id = _effective_rp_id(request)
     for row in rows:
         try:
             new_sign_count = verify_authentication_response(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,12 +14,26 @@ from fastapi.templating import Jinja2Templates
 
 from app.auto_capture import reload as reload_auto_capture
 from app.config import settings
-from app.database import close_pool, init_db
+from app.database import close_pool, get_db, init_db
 from app.observability import install_error_capture
 from app.runtime_settings import load_and_apply_security_config
 from app.storage import ensure_storage
-from app.streaming import webrtc as _webrtc
+from app.streaming import fmp4 as _fmp4
+from app.streaming.worker_link import worker_link
 from app.thumbnail_jobs import shutdown_thumbnail_jobs
+
+
+log = logging.getLogger("sentinelCam.main")
+
+
+async def _worker_watchdog() -> None:
+    """Evict a worker whose heartbeat has gone stale so it stops showing 'online'."""
+    while True:
+        await asyncio.sleep(5.0)
+        try:
+            await worker_link.close_if_stale()
+        except Exception:
+            log.debug("worker watchdog tick failed", exc_info=True)
 
 
 @asynccontextmanager
@@ -28,10 +45,14 @@ async def lifespan(app: FastAPI):
     await load_and_apply_security_config()
     await ensure_storage()
     await reload_auto_capture()
+    watchdog = asyncio.create_task(_worker_watchdog())
     try:
         yield
     finally:
-        await _webrtc.shutdown_all()
+        watchdog.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await watchdog
+        await _fmp4.shutdown_all()
         await shutdown_thumbnail_jobs()
         await close_pool()
 
@@ -51,8 +72,14 @@ async def security_headers_middleware(request: Request, call_next):
     request.state.csp_nonce = nonce
 
     response = await call_next(request)
-    forwarded_proto = (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower()
-    is_secure = request.url.scheme == "https" or forwarded_proto == "https"
+    canonical = settings.canonical_origin
+    if canonical:
+        # Pin to the configured public scheme; do not let a spoofed
+        # X-Forwarded-Proto drop the Secure flag on refreshed cookies.
+        is_secure = canonical.startswith("https://")
+    else:
+        forwarded_proto = (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower()
+        is_secure = request.url.scheme == "https" or forwarded_proto == "https"
 
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -73,8 +100,8 @@ async def security_headers_middleware(request: Request, call_next):
             f"script-src 'self' 'nonce-{nonce}'; "
             f"style-src 'self' 'unsafe-inline'; "
             f"img-src 'self' blob: data:; "
-            # mediasource srcObject for WebRTC needs 'mediastream:' too.
-            f"media-src 'self' blob: mediastream:; "
+            # MSE plays the live fMP4 via a blob: object URL (createObjectURL).
+            f"media-src 'self' blob:; "
             f"connect-src 'self'; "
             f"object-src 'none'; "
             f"frame-ancestors 'none'; "
@@ -145,4 +172,20 @@ async def favicon():
 
 @app.get("/healthz")
 async def app_health():
+    # Pure liveness: the process is up and serving. Used as the Docker
+    # liveness probe; must not depend on the DB so a slow DB doesn't loop-kill us.
     return JSONResponse({"ok": True})
+
+
+@app.get("/readyz")
+async def app_ready():
+    # Readiness: can we actually serve requests (DB reachable)? Returns 503 when
+    # a dependency is down so orchestration sees the container as unhealthy.
+    try:
+        async with get_db() as conn:
+            cursor = await conn.execute("SELECT 1")
+            await cursor.fetchone()
+    except Exception:
+        log.warning("readiness check failed (database)", exc_info=True)
+        return JSONResponse({"ok": False, "db": False}, status_code=503)
+    return JSONResponse({"ok": True, "db": True})

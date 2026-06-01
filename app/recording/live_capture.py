@@ -184,33 +184,15 @@ async def snapshot_from_hub(
 #  Clip recording
 # ---------------------------------------------------------------------------
 
-async def _collect_jpegs(hub: FrameHub, lane: str, duration_s: int) -> list[bytes]:
-    """Pull JPEGs from one lane of the hub for ~duration_s seconds.
+async def _record_lane_mp4(hub: FrameHub, lane: str, duration_s: int, fps: int) -> bytes:
+    """Stream one lane's JPEGs straight into ffmpeg as they arrive → MP4 bytes.
 
-    Uses the hub's wait_* methods so we get exactly one frame per published
-    update. Capped by MAX_CLIP_FRAMES so a runaway publisher cannot OOM us.
+    Frames are piped into ffmpeg during collection rather than buffered in a
+    list first, so memory stays at O(1 frame) regardless of clip duration or
+    concurrent recordings. Returns b"" if the lane produced no frames. Capped
+    by MAX_CLIP_FRAMES so a runaway publisher cannot run unbounded.
     """
-    frames: list[bytes] = []
-    deadline = time.monotonic() + duration_s
-    last_capture = 0
     wait_fn = hub.wait_processed if lane == "processed" else hub.wait_raw
-    while time.monotonic() < deadline and len(frames) < MAX_CLIP_FRAMES:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        result = await wait_fn(last_capture, timeout=min(remaining, 1.0))
-        if result is None:
-            continue
-        payload, capture_ms = result
-        last_capture = capture_ms
-        frames.append(payload)
-    return frames
-
-
-async def _encode_mp4(jpegs: list[bytes], fps: int) -> bytes:
-    """Pipe JPEGs through ffmpeg to produce an MP4 byte string."""
-    if not jpegs:
-        return b""
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg",
         "-loglevel", "error",
@@ -229,12 +211,25 @@ async def _encode_mp4(jpegs: list[bytes], fps: int) -> bytes:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    written = 0
 
     async def feed() -> None:
+        nonlocal written
+        deadline = time.monotonic() + duration_s
+        last_capture = 0
         try:
-            for jpeg in jpegs:
-                proc.stdin.write(jpeg)
+            while time.monotonic() < deadline and written < MAX_CLIP_FRAMES:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                result = await wait_fn(last_capture, timeout=min(remaining, 1.0))
+                if result is None:
+                    continue
+                payload, capture_ms = result
+                last_capture = capture_ms
+                proc.stdin.write(payload)
                 await proc.stdin.drain()
+                written += 1
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
@@ -246,6 +241,8 @@ async def _encode_mp4(jpegs: list[bytes], fps: int) -> bytes:
     feed_task = asyncio.create_task(feed())
     stdout, stderr = await proc.communicate()
     await feed_task
+    if written == 0:
+        return b""
     if proc.returncode != 0:
         msg = (stderr or b"").decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"ffmpeg failed (rc={proc.returncode}): {msg[:400]}")
@@ -273,26 +270,24 @@ async def record_clip_from_hub(
         raise HTTPException(503, "No frame available from this camera yet")
 
     log.info("recording clip for user %d camera %d (%ds)", user_id, hub.camera_id, duration_s)
-    processed_frames, raw_frames = await asyncio.gather(
-        _collect_jpegs(hub, "processed", duration_s),
-        _collect_jpegs(hub, "raw", duration_s),
+    # Record both lanes concurrently, streaming frames into ffmpeg as they
+    # arrive so memory stays bounded regardless of duration/concurrency.
+    processed_mp4, raw_lane_mp4 = await asyncio.gather(
+        _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
+        _record_lane_mp4(hub, "raw", duration_s, CLIP_FPS),
     )
 
-    if not processed_frames and not raw_frames:
-        raise HTTPException(503, "Hub went silent during clip recording")
-
-    # Encode each available lane in parallel.
-    overlay_mp4_task = asyncio.create_task(
-        _encode_mp4(processed_frames or raw_frames, CLIP_FPS)
-    )
-    raw_mp4_task = (
-        asyncio.create_task(_encode_mp4(raw_frames, CLIP_FPS)) if raw_frames else None
-    )
-    overlay_mp4 = await overlay_mp4_task
-    raw_mp4 = await raw_mp4_task if raw_mp4_task else b""
+    if processed_mp4:
+        overlay_mp4 = processed_mp4
+        raw_mp4 = raw_lane_mp4  # may be b"" if the raw lane was silent
+    else:
+        # No processed lane (worker offline): use the raw lane as the overlay
+        # and do not store a duplicate raw file.
+        overlay_mp4 = raw_lane_mp4
+        raw_mp4 = b""
 
     if not overlay_mp4:
-        raise HTTPException(500, "ffmpeg produced an empty overlay clip")
+        raise HTTPException(503, "No frames available from this camera during recording")
 
     file_uuid = uuid.uuid4().hex
     overlay_filename = f"{file_uuid}.mp4"

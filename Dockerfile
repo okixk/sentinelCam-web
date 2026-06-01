@@ -31,7 +31,7 @@ COPY --chown=sentinelcam:sentinelcam . .
 
 EXPOSE 80
 
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost/healthz', timeout=5)" || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=30s \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost/readyz', timeout=5)" || exit 1
 
 CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]

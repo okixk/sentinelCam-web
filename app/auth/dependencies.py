@@ -98,19 +98,26 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
 
 def _same_origin(request: Request) -> bool:
     """Defense-in-depth: state-changing requests must originate from the same site."""
+    from app.config import settings
+
     origin = request.headers.get("origin") or ""
     referer = request.headers.get("referer") or ""
     if not origin and not referer:
-        # Some browsers strip both for privacy on same-origin requests; allow.
+        # Some browsers strip both for privacy on same-origin requests; the
+        # double-submit CSRF token check (below in check_csrf) still applies.
         return True
-    expected_host = request.headers.get("host", "")
-    expected_scheme = (
-        "https"
-        if request.url.scheme == "https"
-        or (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower() == "https"
-        else "http"
-    )
-    expected_prefix = f"{expected_scheme}://{expected_host}"
+    # In production compare against the pinned canonical origin rather than the
+    # client-supplied Host / X-Forwarded-* (which an attacker can spoof).
+    expected_prefix = settings.canonical_origin
+    if not expected_prefix:
+        expected_host = request.headers.get("host", "")
+        expected_scheme = (
+            "https"
+            if request.url.scheme == "https"
+            or (request.headers.get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower() == "https"
+            else "http"
+        )
+        expected_prefix = f"{expected_scheme}://{expected_host}"
     if origin:
         return origin == expected_prefix
     return referer.startswith(expected_prefix + "/") or referer == expected_prefix

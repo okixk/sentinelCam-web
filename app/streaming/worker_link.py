@@ -21,6 +21,11 @@ from fastapi import WebSocket
 
 log = logging.getLogger("sentinelCam.worker")
 
+# A worker that has not sent a heartbeat within this many seconds is treated as
+# wedged: it is reported "stale" and the watchdog closes the channel so the
+# admin UI / fallback path see it as down instead of a frozen "online".
+STALE_AFTER_S = 15.0
+
 
 @dataclass
 class WorkerConnection:
@@ -80,14 +85,45 @@ class WorkerLink:
     def status(self) -> dict[str, Any]:
         conn = self._current
         if conn is None:
-            return {"connected": False}
+            return {"connected": False, "alive": False}
         return {
             "connected": True,
+            "alive": not self._is_stale(conn),
             "worker_id": conn.worker_id,
             "connected_at": conn.connected_at,
             "last_heartbeat_at": conn.last_heartbeat_at or None,
+            "seconds_since_heartbeat": self._seconds_since_heartbeat(conn),
             "last_status": dict(conn.last_status),
         }
+
+    @staticmethod
+    def _seconds_since_heartbeat(conn: WorkerConnection) -> Optional[float]:
+        ref = conn.last_heartbeat_at or conn.connected_at
+        if not ref:
+            return None
+        return round(time.time() - ref, 1)
+
+    @staticmethod
+    def _is_stale(conn: WorkerConnection) -> bool:
+        ref = conn.last_heartbeat_at or conn.connected_at
+        return bool(ref) and (time.time() - ref) > STALE_AFTER_S
+
+    async def close_if_stale(self) -> bool:
+        """Close + detach the worker if its heartbeat has gone stale.
+
+        Returns True if a stale worker was evicted. Intended to be polled by a
+        background watchdog task.
+        """
+        conn = self._current
+        if conn is None or not self._is_stale(conn):
+            return False
+        log.warning("worker %d heartbeat stale (>%.0fs); closing channel", conn.worker_id, STALE_AFTER_S)
+        try:
+            await conn.websocket.close(code=4001)
+        except Exception:
+            pass
+        await self.detach(conn)
+        return True
 
 
 worker_link = WorkerLink()
