@@ -8,13 +8,16 @@
 
 http:
   routers:
-    # `ie-lis050` is the web server's internal hostname: it lets the worker and
-    # LAN clients reach Traefik directly over the local network (Host header
-    # still matches this router), bypassing Cloudflare — which is unreliable for
-    # sustained WebSocket streams. Add more internal names with `|| Host(...)`.
-    # Traefik hot-reloads this file (file provider watch: true).
+    # Direct (non-Cloudflare) access to the web app:
+    #  - `ie-lis050`      : the web server's internal hostname, for the worker /
+    #                       LAN clients that resolve it via your network DNS.
+    #  - `172.30.0.10`    : the Traefik bridge IP that WireGuard VPN clients can
+    #                       reach (the edge can dial wss://172.30.0.10 directly,
+    #                       no hosts file / no reachable internal DNS needed).
+    # Host() does not match IP literals, so the bridge IP is matched via
+    # HostRegexp (Traefik v3 Go-regexp syntax). Traefik hot-reloads this file.
     sentinelcam:
-      rule: "Host(`sentinelcam.ch`) || Host(`ie-lis050`)"
+      rule: 'Host(`sentinelcam.ch`) || Host(`ie-lis050`) || HostRegexp(`^172\.30\.0\.10$`)'
       entryPoints: [websecure]
       service: sentinelcam
       tls: {}
