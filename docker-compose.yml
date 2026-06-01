@@ -115,6 +115,10 @@ services:
       INITIAL_ADMIN_USER: ${ADMIN_USER:-admin}
       INITIAL_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+      # Pins WebAuthn origin / secure-cookie / CSRF to a trusted origin instead
+      # of client X-Forwarded-* headers. Defaults to https://<WEBAUTHN_RP_ID>
+      # when SC_PUBLIC=1; set explicitly only if the public host != the RP-ID.
+      SC_PUBLIC_ORIGIN: ${SC_PUBLIC_ORIGIN:-}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-sentinelcam}
