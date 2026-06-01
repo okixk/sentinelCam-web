@@ -8,8 +8,13 @@
 
 http:
   routers:
+    # `ie-lis050` is the web server's internal hostname: it lets the worker and
+    # LAN clients reach Traefik directly over the local network (Host header
+    # still matches this router), bypassing Cloudflare — which is unreliable for
+    # sustained WebSocket streams. Add more internal names with `|| Host(...)`.
+    # Traefik hot-reloads this file (file provider watch: true).
     sentinelcam:
-      rule: "Host(`sentinelcam.ch`)"
+      rule: "Host(`sentinelcam.ch`) || Host(`ie-lis050`)"
       entryPoints: [websecure]
       service: sentinelcam
       tls: {}
