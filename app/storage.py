@@ -152,17 +152,33 @@ async def object_exists(key: str) -> bool:
     return await head_object(key) is not None
 
 
-async def stream_object(key: str, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
-    """Async iterator that yields chunks for a stored object."""
+async def stream_object(
+    key: str,
+    chunk_size: int = 64 * 1024,
+    *,
+    start: int = 0,
+    end: Optional[int] = None,
+) -> AsyncIterator[bytes]:
+    """Async iterator yielding chunks of a stored object.
+
+    With no ``start``/``end`` it streams the whole file. ``end`` is inclusive
+    (HTTP Range semantics), so ``start=0, end=9`` yields the first 10 bytes.
+    """
     path = _path_for_key(key)
     if not await asyncio.to_thread(path.is_file):
         raise FileNotFoundError(key)
 
+    remaining = None if end is None else (end - start + 1)
     with path.open("rb") as handle:
-        while True:
-            chunk = await asyncio.to_thread(handle.read, chunk_size)
+        if start:
+            await asyncio.to_thread(handle.seek, start)
+        while remaining is None or remaining > 0:
+            to_read = chunk_size if remaining is None else min(chunk_size, remaining)
+            chunk = await asyncio.to_thread(handle.read, to_read)
             if not chunk:
                 break
+            if remaining is not None:
+                remaining -= len(chunk)
             yield chunk
 
 

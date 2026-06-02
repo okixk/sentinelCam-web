@@ -204,7 +204,10 @@ async def _record_lane_mp4(hub: FrameHub, lane: str, duration_s: int, fps: int) 
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
+        # Fragmented MP4 muxes cleanly to a non-seekable pipe (moov up front),
+        # so ffmpeg doesn't buffer the whole clip in RAM to relocate the atom
+        # (which +faststart would force here). Decodable by cv2 + <video>.
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4",
         "pipe:1",
         stdin=asyncio.subprocess.PIPE,

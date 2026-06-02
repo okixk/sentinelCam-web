@@ -117,10 +117,17 @@ def _make_video_thumbnail_bytes(src_bytes: bytes, suffix: str) -> bytes:
         tmp.close()
         cap = cv2.VideoCapture(tmp.name)
         try:
-            ok, frame = cap.read()
+            frame = None
+            # The first read() can return False before the decoder has emitted a
+            # frame (or on a B-frame lead-in); try several before giving up.
+            for _ in range(15):
+                ok, candidate = cap.read()
+                if ok and candidate is not None:
+                    frame = candidate
+                    break
         finally:
             cap.release()
-        if not ok or frame is None:
+        if frame is None:
             raise RuntimeError("Could not decode video frame")
         resized = frame
         height, width = frame.shape[:2]

@@ -166,7 +166,13 @@ async def capture_page(request: Request):
 async def favicon():
     icon_path = static_path / "branding" / "favicon.png"
     if icon_path.exists():
-        return FileResponse(str(icon_path), media_type="image/png")
+        # Explicit cache header: this path is not under /static/, so without it
+        # the security middleware would tag it no-store and re-fetch every load.
+        return FileResponse(
+            str(icon_path),
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
     return HTMLResponse("", status_code=204)
 
 

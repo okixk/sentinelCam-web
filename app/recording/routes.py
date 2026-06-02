@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.auth.dependencies import User, check_csrf, get_current_user
 from app.config import settings
@@ -266,9 +266,34 @@ async def get_recording(recording_id: int, user: User = Depends(get_current_user
     return JSONResponse(dict(row))
 
 
+def _parse_byte_range(range_header: str, size: int) -> Optional[tuple[int, int]]:
+    """Parse a single HTTP byte range. Returns (start, end) inclusive, or None."""
+    if not range_header.startswith("bytes="):
+        return None
+    spec = range_header[len("bytes="):].split(",", 1)[0].strip()
+    if "-" not in spec:
+        return None
+    start_s, _, end_s = spec.partition("-")
+    try:
+        if start_s == "":  # suffix range: last N bytes
+            n = int(end_s)
+            if n <= 0:
+                return None
+            start, end = max(0, size - n), size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return None
+    if start > end or start >= size:
+        return None
+    return start, min(end, size - 1)
+
+
 @router.get("/{recording_id}/file")
 async def serve_recording_file(
     recording_id: int,
+    request: Request,
     variant: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
@@ -301,21 +326,43 @@ async def serve_recording_file(
     key = recording_key(int(row["user_id"]), safe_name)
 
     head = await head_object(key)
+    if head is None:
+        raise HTTPException(404, "File not found on disk")
 
-    headers = object_response_headers(head or {})
-    headers.setdefault("Cache-Control", "private, max-age=300")
+    file_size = int(head.get("ContentLength") or 0)
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=300"}
+    etag = head.get("ETag")
+    if etag:
+        headers["ETag"] = etag
+
+    # HTTP Range support so <video> can seek and browsers (esp. Safari) that
+    # require partial content will play the clip.
+    start, end = 0, max(0, file_size - 1)
+    status_code = 200
+    range_header = request.headers.get("range")
+    if range_header and file_size > 0:
+        parsed = _parse_byte_range(range_header, file_size)
+        if parsed is None:
+            return Response(
+                status_code=416,
+                headers={"Content-Range": f"bytes */{file_size}", "Accept-Ranges": "bytes"},
+            )
+        start, end = parsed
+        status_code = 206
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    headers["Content-Length"] = str(end - start + 1 if file_size > 0 else 0)
 
     async def iter_chunks():
         try:
-            async for chunk in stream_object(key):
+            async for chunk in stream_object(key, start=start, end=(end if file_size > 0 else None)):
                 yield chunk
         except FileNotFoundError:
             return
 
-    if head is None:
-        raise HTTPException(404, "File not found on disk")
-
-    return StreamingResponse(iter_chunks(), media_type=media_type, headers=headers)
+    return StreamingResponse(
+        iter_chunks(), status_code=status_code, media_type=media_type, headers=headers
+    )
 
 
 @router.get("/{recording_id}/thumbnail")
@@ -338,8 +385,12 @@ async def serve_thumbnail(recording_id: int, user: User = Depends(get_current_us
         key = await ensure_thumbnail_from_row(row)
     except FileNotFoundError:
         raise HTTPException(404, "File not found")
-    except Exception as e:
-        raise HTTPException(500, f"Thumbnail generation failed: {e}")
+    except Exception:
+        # A thumbnail we can't generate (e.g. a clip cv2 can't pull a frame
+        # from) must not 500 the gallery — log it and 404 so the client falls
+        # back to its placeholder tile. The real error is captured here.
+        log.warning("Thumbnail generation failed for recording %s", recording_id, exc_info=True)
+        raise HTTPException(404, "Thumbnail unavailable")
 
     async def iter_chunks():
         try:
