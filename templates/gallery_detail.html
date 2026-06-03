@@ -175,6 +175,10 @@
 {% endblock %}
 {% block scripts %}
 <script nonce="{{ request.state.csp_nonce }}">
+  {#- Jinja `{% set %}` does not cross blocks, so re-derive the vars this
+      script needs from the context globals (recording / back_query). -#}
+  {%- set rec = recording -%}
+  {%- set back_href = '/gallery' + ('?' + back_query if back_query else '') -%}
   const recId = {{ rec.id }};
   const backHref = {{ back_href | tojson }};
   const isImage = {{ 'true' if rec.type == 'image' else 'false' }};
