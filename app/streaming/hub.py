@@ -43,7 +43,7 @@ class _H264Lane:
     cushion, not a long backlog.
     """
 
-    __slots__ = ("_buf", "_seq", "_waiter", "received_at", "total")
+    __slots__ = ("_buf", "_seq", "_waiter", "received_at", "total", "source")
 
     def __init__(self, maxlen: int = 300) -> None:
         self._buf: deque[tuple[int, bytes, bool]] = deque(maxlen=maxlen)
@@ -51,10 +51,29 @@ class _H264Lane:
         self._waiter = asyncio.Event()
         self.received_at = 0.0
         self.total = 0
+        # Which producer currently owns the lane: "edge" (camera-encoded H.264
+        # arriving on /api/ingest) or "worker" (annotated re-encode). Exactly
+        # one producer may feed the lane at a time — interleaving two encoders
+        # (different SPS/PPS, resolution, timestamps) corrupts the ffmpeg
+        # ``-c:v copy`` mux downstream.
+        self.source: Optional[str] = None
 
-    def publish(self, access_unit: bytes, is_keyframe: bool) -> None:
+    def fresh(self) -> bool:
+        return self.total > 0 and (time.time() - self.received_at) < 10.0
+
+    def publish(self, access_unit: bytes, is_keyframe: bool, source: str = "worker") -> None:
         if not access_unit:
             return
+        if source != self.source:
+            # The edge wins while its stream is fresh: when a camera sends
+            # H.264 directly, the worker only sees the low-fps detection
+            # sidecar and its re-encode must not displace the real stream.
+            if self.source == "edge" and source == "worker" and self.fresh():
+                return
+            # Taking over (or the previous producer went stale): drop the old
+            # buffer so a new subscriber never sees AUs from two encoders.
+            self._buf.clear()
+            self.source = source
         self._seq += 1
         self._buf.append((self._seq, access_unit, bool(is_keyframe)))
         self.total += 1
@@ -169,14 +188,14 @@ class FrameHub:
 
     # ----- H.264 lane -----------------------------------------------------
 
-    def publish_h264(self, access_unit: bytes, is_keyframe: bool) -> None:
-        self._h264.publish(access_unit, is_keyframe)
+    def publish_h264(self, access_unit: bytes, is_keyframe: bool, source: str = "worker") -> None:
+        self._h264.publish(access_unit, is_keyframe, source)
 
     def subscribe_h264(self, *, idle_timeout: float = 10.0) -> AsyncIterator[bytes]:
         return self._h264.subscribe(idle_timeout=idle_timeout)
 
     def has_h264(self) -> bool:
-        return self._h264.total > 0 and (time.time() - self._h264.received_at) < 10.0
+        return self._h264.fresh()
 
     # ----- stats ----------------------------------------------------------
 
@@ -186,6 +205,7 @@ class FrameHub:
             "raw_frames": self._raw.total_frames,
             "processed_frames": self._processed.total_frames,
             "h264_units": self._h264.total,
+            "h264_source": self._h264.source,
             "raw_last_at": self._raw.received_at or None,
             "processed_last_at": self._processed.received_at or None,
             "h264_last_at": self._h264.received_at or None,

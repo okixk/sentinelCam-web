@@ -13,6 +13,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import User, check_csrf, get_current_user
 from app.auto_capture import handle_detection
+from app.config import settings
 from app.database import get_db
 from app.recording.live_capture import (
     ALLOWED_CLIP_DURATIONS,
@@ -90,16 +91,29 @@ async def ingest(ws: WebSocket, cam_id: int) -> None:
     try:
         while True:
             payload = await ws.receive_bytes()
-            if len(payload) > _MAX_FRAME_BYTES or not _looks_like_jpeg(payload):
+            if len(payload) <= _MAX_FRAME_BYTES and _looks_like_jpeg(payload):
+                capture_ms = now_ms()
+                await hub.publish_raw(payload, capture_ms)
+                envelope = encode(MSG_RAW_FRAME, cam_id, capture_ms, payload)
+                # Best-effort forward to the worker; if the worker is offline
+                # the frame still lives in the raw hub and viewers can see it
+                # directly.
+                await worker_link.dispatch_to_worker(envelope)
+            elif (
+                settings.edge_h264_ingest
+                and len(payload) <= _MAX_H264_AU_BYTES
+                and looks_like_annexb(payload)
+            ):
+                # Edge-encoded H.264 lane: one Annex-B access unit per binary
+                # message, distinguished from JPEG by magic bytes on the same
+                # socket. Feeds the same hub lane the worker uses — fmp4/MSE
+                # are source-agnostic. Not forwarded to the worker; detection
+                # runs on the camera's low-fps JPEG sidecar (the branch above).
+                hub.publish_h264(payload, is_keyframe(payload), source="edge")
+            else:
                 # Silently drop bad frames; do not tear down the channel for
                 # the occasional partial frame on flaky links.
                 continue
-            capture_ms = now_ms()
-            await hub.publish_raw(payload, capture_ms)
-            envelope = encode(MSG_RAW_FRAME, cam_id, capture_ms, payload)
-            # Best-effort forward to the worker; if the worker is offline the
-            # frame still lives in the raw hub and viewers can see it directly.
-            await worker_link.dispatch_to_worker(envelope)
             frames_seen += 1
             if frames_seen % 30 == 0:
                 # Update DB stats roughly once per second @ 30 fps.
@@ -192,7 +206,10 @@ async def _handle_worker_binary(frame: Frame) -> None:
         if len(frame.payload) > _MAX_H264_AU_BYTES or not looks_like_annexb(frame.payload):
             return
         hub = frame_hubs.get(frame.camera_id) or await frame_hubs.get_or_create(frame.camera_id)
-        hub.publish_h264(frame.payload, is_keyframe(frame.payload))
+        # Dropped by the hub while an edge-encoded H.264 stream is fresh for
+        # this camera (the worker would only be re-encoding the detection
+        # sidecar — mixing the two encoders corrupts the -c:v copy mux).
+        hub.publish_h264(frame.payload, is_keyframe(frame.payload), source="worker")
 
 
 async def _handle_worker_text(conn, text: str) -> None:
@@ -328,7 +345,11 @@ async def list_active_cameras(user: User = Depends(get_current_user)):
     for r in rows:
         cam_id = int(r["id"])
         hub = frame_hubs.get(cam_id)
-        has_frames = hub is not None and (hub.latest_processed()[0] is not None or hub.latest_raw()[0] is not None)
+        has_frames = hub is not None and (
+            hub.latest_processed()[0] is not None
+            or hub.latest_raw()[0] is not None
+            or hub.has_h264()  # edge-H.264 cameras may have no JPEG lanes
+        )
         items.append(
             {
                 "id": cam_id,

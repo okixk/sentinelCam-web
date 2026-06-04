@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # of trusting client-supplied Host / X-Forwarded-* headers.
     public_origin: str = Field(default="", validation_alias=AliasChoices("SC_PUBLIC_ORIGIN"))
 
+    # Streaming
+    # Accept camera-encoded H.264 access units on /api/ingest (in addition to
+    # JPEG). Set SC_EDGE_H264_INGEST=0 to restrict ingest to JPEG only.
+    edge_h264_ingest: bool = Field(default=True, validation_alias=AliasChoices("SC_EDGE_H264_INGEST"))
+
     # Recordings
     max_upload_size_mb: int = 100
     max_recording_duration_minutes: int = 5

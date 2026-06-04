@@ -113,5 +113,44 @@ class H264HubLaneTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hub.has_h264())
 
 
+class H264LaneSourceTest(unittest.IsolatedAsyncioTestCase):
+    """Exactly one producer (edge or worker) may own the H.264 lane at a time."""
+
+    KF_EDGE = b"\x00\x00\x01\x65edge-idr"
+    D_EDGE = b"\x00\x00\x01\x41edge-delta"
+    KF_WORKER = b"\x00\x00\x01\x65worker-idr"
+
+    async def test_edge_locks_out_worker_while_fresh(self):
+        hub = hub_mod.FrameHub(1)
+        hub.publish_h264(self.KF_EDGE, True, source="edge")
+        hub.publish_h264(self.KF_WORKER, True, source="worker")  # must be dropped
+        got = [au async for au in hub.subscribe_h264(idle_timeout=0.1)]
+        self.assertEqual(got, [self.KF_EDGE])
+        self.assertEqual(hub.stats()["h264_source"], "edge")
+
+    async def test_worker_takes_over_when_edge_stale(self):
+        hub = hub_mod.FrameHub(1)
+        hub.publish_h264(self.KF_EDGE, True, source="edge")
+        hub._h264.received_at -= 30.0  # simulate the edge stream going stale
+        hub.publish_h264(self.KF_WORKER, True, source="worker")
+        got = [au async for au in hub.subscribe_h264(idle_timeout=0.1)]
+        self.assertEqual(got, [self.KF_WORKER])
+        self.assertEqual(hub.stats()["h264_source"], "worker")
+
+    async def test_edge_takeover_clears_worker_buffer(self):
+        hub = hub_mod.FrameHub(1)
+        hub.publish_h264(self.KF_WORKER, True, source="worker")
+        hub.publish_h264(self.KF_EDGE, True, source="edge")
+        hub.publish_h264(self.D_EDGE, False, source="edge")
+        got = [au async for au in hub.subscribe_h264(idle_timeout=0.1)]
+        # No worker AU may leak into the edge stream a new subscriber sees.
+        self.assertEqual(got, [self.KF_EDGE, self.D_EDGE])
+
+    async def test_default_source_is_worker(self):
+        hub = hub_mod.FrameHub(1)
+        hub.publish_h264(self.KF_WORKER, True)
+        self.assertEqual(hub.stats()["h264_source"], "worker")
+
+
 if __name__ == "__main__":
     unittest.main()

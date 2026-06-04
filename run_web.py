@@ -16,4 +16,10 @@ if __name__ == "__main__":
         log_level="info",
         proxy_headers=True,
         forwarded_allow_ips=forwarded_allow_ips,
+        # Generous pong deadline for camera ingest over thin VPN links: with the
+        # 20s defaults the pong queues behind the frame backlog and uvicorn
+        # closes a healthy ingest socket (1011 keepalive ping timeout) every
+        # ~20-40s. Dead-link detection still works, just with more tolerance.
+        ws_ping_interval=30,
+        ws_ping_timeout=120,
     )

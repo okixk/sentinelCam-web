@@ -99,3 +99,28 @@ code, and a no-op MJPEG connection cap. These were left for a separate change
 since that path can't be exercised in CI here; the SIGTERM handler and
 camera-reopen reliability fixes were applied.
 ```
+
+## Edge-encoded H.264 ingest lane (SC_CODEC=h264 on the edge)
+
+For remote cameras on thin uplinks (Pi over WireGuard VPN) the edge can now
+encode H.264 itself and push Annex-B access units over the **same**
+`/api/ingest/{cam_id}` WebSocket it uses for JPEG — the server tells the two
+apart by magic bytes per message (`FF D8 FF` = JPEG, `00 00 01` = Annex-B).
+1080p30 then costs ~4–5 Mbit/s instead of ~40–80 Mbit/s as MJPEG.
+
+```
+edge (hw H.264) --Annex-B AU--> web hub h264 lane --fMP4 copy--> browser
+       \--JPEG sidecar (2 fps)--> web --> worker (YOLO) --> detections/auto-record
+```
+
+- The edge AUs feed the same `hub.publish_h264()` lane the worker uses;
+  `fmp4.py` / `viewer.js` are untouched (source-agnostic).
+- **One producer owns the lane**: while an edge H.264 stream is fresh (<10 s),
+  worker `MSG_PROCESSED_H264` for that camera is dropped so two encoders can
+  never interleave into one `-c:v copy` mux. The lane buffer is cleared on a
+  source switch. Source is visible in `hub.stats()` (`h264_source`).
+- **Product note:** the live view shows the camera's own stream — no YOLO
+  boxes burned in. Detection JSON, auto-recording, and annotated snapshots
+  keep working via the edge's low-fps JPEG sidecar (`SC_SIDECAR_FPS`).
+- `SC_EDGE_H264_INGEST=0` (web env) restricts ingest to JPEG-only again.
+- No protocol change: PROTOCOL_VERSION stays 2; worker repo is untouched.
