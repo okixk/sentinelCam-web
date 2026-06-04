@@ -41,8 +41,13 @@ def _ffmpeg_args() -> list[str]:
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "error",
-        "-fflags", "+nobuffer+genpts",
-        "-flags", "low_delay",
+        # Stamp AUs with their arrival time; the small probe window keeps
+        # startup fast. Do NOT add "-fflags +nobuffer" here: with "-f h264"
+        # + "-c:v copy" it makes the demuxer silently drop ~1/3 of the frames
+        # (measured: 90-frame stream -> 60 decoded) AND quadruples first-byte
+        # latency (~1.3s vs ~0.3s with the probe settings below).
+        "-probesize", "32768",
+        "-analyzeduration", "0",
         "-use_wallclock_as_timestamps", "1",
         "-f", "h264",
         "-i", "pipe:0",

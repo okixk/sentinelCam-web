@@ -124,3 +124,13 @@ edge (hw H.264) --Annex-B AU--> web hub h264 lane --fMP4 copy--> browser
   keep working via the edge's low-fps JPEG sidecar (`SC_SIDECAR_FPS`).
 - `SC_EDGE_H264_INGEST=0` (web env) restricts ingest to JPEG-only again.
 - No protocol change: PROTOCOL_VERSION stays 2; worker repo is untouched.
+
+## Fix: fMP4 relay dropped ~1/3 of frames (`-fflags +nobuffer`)
+
+Measured with a 90-frame test stream through the exact relay args: with
+`-fflags +nobuffer` the `-f h264` demuxer + `-c:v copy` path delivered only
+60 of 90 frames to the browser AND took ~1.3 s to emit the first byte. The
+replacement (`-probesize 32768 -analyzeduration 0`, keep wallclock timestamps)
+delivers all 90 frames with ~0.3 s startup. This affected the worker lane too
+(live view effectively ~20 fps instead of 30) — after deploying, the live view
+should look noticeably smoother.
