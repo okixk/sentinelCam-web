@@ -173,9 +173,16 @@ async function loadOpsStatus(options = {}) {
     const dbBadge = database.ok
       ? `<span class="status-pill ok">OK · ${database.latency_ms ?? "?"} ms</span>`
       : `<span class="status-pill error">DOWN</span>`;
-    const workerBadge = worker.configured
-      ? `<span class="status-pill ok">configured</span>`
-      : `<span class="status-pill neutral">not configured</span>`;
+    // worker_link.status() reports {connected, alive, worker_id, ...} — there
+    // is no "configured" field (that always rendered "not configured").
+    const workerBadge = worker.connected
+      ? (worker.alive
+          ? `<span class="status-pill ok">online${worker.worker_id != null ? " · #" + worker.worker_id : ""}</span>`
+          : `<span class="status-pill warn">stale</span>`)
+      : `<span class="status-pill neutral">offline</span>`;
+    const workerDetail = worker.connected
+      ? `Heartbeat: ${worker.seconds_since_heartbeat != null ? worker.seconds_since_heartbeat + "s ago" : "—"}`
+      : "No worker connected";
     const queueSummary = `${thumbnail.pending_count || 0} pending | ${thumbnail.inflight_count || 0} inflight | ${thumbnail.active_tasks || 0} active`;
     const resultSummary = `${thumbnail.completed_count || 0} completed | ${thumbnail.failed_count || 0} failed`;
     const recordingsBytes = storage.recordings_bytes;
@@ -219,7 +226,7 @@ async function loadOpsStatus(options = {}) {
       </div>
       <div class="stack-note-card">
         <strong>Worker</strong> ${workerBadge}
-        <div class="small">${escHtml(worker.reason || "-")}</div>
+        <div class="small">${escHtml(workerDetail)}</div>
       </div>
       <div class="stack-note-card">
         <strong>Thumbnail queue</strong>

@@ -4,11 +4,12 @@ Two entry points:
 
 - :func:`snapshot_from_hub` grabs the most recent processed and raw JPEG
   for a camera and stores both as a single ``image`` recording.
-- :func:`record_clip_from_hub` collects JPEGs from both lanes for a fixed
-  duration and pipes them through ffmpeg into MP4s — one for the overlay
-  lane, one for the raw lane. The result is a single ``video`` recording
-  with both ``overlay_filename`` and ``raw_filename`` set, so the gallery's
-  existing overlay-toggle plays both back.
+- :func:`record_clip_from_hub` records a fixed duration into MP4s — one for
+  the overlay lane, one for the raw lane — so the gallery's existing
+  overlay-toggle plays both back. JPEG lanes are sampled at a fixed output
+  fps (repeating frames when a lane is slower, e.g. the 2 fps detection
+  sidecar of an edge-H.264 camera). When the camera streams H.264 directly,
+  the raw clip is stream-copied from the H.264 lane at full quality instead.
 
 Both functions enforce the per-user storage quota, audit-log, and schedule
 a thumbnail warmup so the gallery thumbnail shows up quickly.
@@ -185,14 +186,16 @@ async def snapshot_from_hub(
 # ---------------------------------------------------------------------------
 
 async def _record_lane_mp4(hub: FrameHub, lane: str, duration_s: int, fps: int) -> bytes:
-    """Stream one lane's JPEGs straight into ffmpeg as they arrive → MP4 bytes.
+    """Sample one lane's JPEGs at `fps` straight into ffmpeg → MP4 bytes.
 
-    Frames are piped into ffmpeg during collection rather than buffered in a
-    list first, so memory stays at O(1 frame) regardless of clip duration or
-    concurrent recordings. Returns b"" if the lane produced no frames. Capped
-    by MAX_CLIP_FRAMES so a runaway publisher cannot run unbounded.
+    Each output tick takes the lane's freshest frame, repeating it if the
+    lane is slower than `fps` — so the clip always plays back in real time,
+    even for the ~2 fps detection sidecar of an edge-H.264 camera (a naive
+    as-they-arrive feed muxed at a fixed framerate turns that into a 7x
+    time-lapse). Memory stays at O(1 frame); capped by MAX_CLIP_FRAMES.
+    Returns b"" if the lane never produced a frame.
     """
-    wait_fn = hub.wait_processed if lane == "processed" else hub.wait_raw
+    getter = hub.latest_processed if lane == "processed" else hub.latest_raw
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg",
         "-loglevel", "error",
@@ -219,20 +222,21 @@ async def _record_lane_mp4(hub: FrameHub, lane: str, duration_s: int, fps: int) 
     async def feed() -> None:
         nonlocal written
         deadline = time.monotonic() + duration_s
-        last_capture = 0
+        period = 1.0 / max(fps, 1)
+        next_tick = time.monotonic()
         try:
             while time.monotonic() < deadline and written < MAX_CLIP_FRAMES:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                result = await wait_fn(last_capture, timeout=min(remaining, 1.0))
-                if result is None:
-                    continue
-                payload, capture_ms = result
-                last_capture = capture_ms
-                proc.stdin.write(payload)
-                await proc.stdin.drain()
-                written += 1
+                payload, _capture_ms = getter()
+                if payload is not None:
+                    proc.stdin.write(payload)
+                    await proc.stdin.drain()
+                    written += 1
+                next_tick += period
+                sleep_for = next_tick - time.monotonic()
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                else:
+                    next_tick = time.monotonic()
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
@@ -249,6 +253,69 @@ async def _record_lane_mp4(hub: FrameHub, lane: str, duration_s: int, fps: int) 
     if proc.returncode != 0:
         msg = (stderr or b"").decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"ffmpeg failed (rc={proc.returncode}): {msg[:400]}")
+    return stdout
+
+
+# Safety cap for stream-copied H.264 clips (60s at ~25 Mbit/s would be ~190MB).
+_MAX_H264_CLIP_BYTES = 200 * 1024 * 1024
+
+
+async def _record_h264_mp4(hub: FrameHub, duration_s: int) -> bytes:
+    """Stream-copy the camera's H.264 lane into an MP4 for `duration_s`.
+
+    For edge-H.264 cameras this is the only full-framerate video — the JPEG
+    lanes carry just the low-fps detection sidecar. ``-c:v copy`` keeps the
+    full 1080p30 quality at near-zero CPU cost. Starts at a keyframe (the hub
+    subscription guarantees it). Returns b"" if the lane produced nothing.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-loglevel", "error",
+        "-y",
+        # Same demuxer settings as the fMP4 live relay: small probe for fast
+        # start; no +nobuffer (it silently drops ~1/3 of the frames).
+        "-probesize", "32768",
+        "-analyzeduration", "0",
+        "-use_wallclock_as_timestamps", "1",
+        "-f", "h264",
+        "-i", "-",
+        "-an",
+        "-c:v", "copy",
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4",
+        "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    written = 0
+
+    async def feed() -> None:
+        nonlocal written
+        deadline = time.monotonic() + duration_s
+        try:
+            async for au in hub.subscribe_h264(idle_timeout=2.0):
+                if time.monotonic() >= deadline or written >= _MAX_H264_CLIP_BYTES:
+                    break
+                proc.stdin.write(au)
+                await proc.stdin.drain()
+                written += len(au)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+    feed_task = asyncio.create_task(feed())
+    stdout, stderr = await proc.communicate()
+    await feed_task
+    if written == 0:
+        return b""
+    if proc.returncode != 0:
+        msg = (stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg copy failed (rc={proc.returncode}): {msg[:400]}")
     return stdout
 
 
@@ -269,25 +336,43 @@ async def record_clip_from_hub(
         raise HTTPException(400, f"duration_s must be one of {ALLOWED_CLIP_DURATIONS}")
 
     # Sanity: only proceed if the hub has at least one fresh frame.
-    if hub.latest_processed()[0] is None and hub.latest_raw()[0] is None:
+    if (
+        hub.latest_processed()[0] is None
+        and hub.latest_raw()[0] is None
+        and not hub.has_h264()
+    ):
         raise HTTPException(503, "No frame available from this camera yet")
 
     log.info("recording clip for user %d camera %d (%ds)", user_id, hub.camera_id, duration_s)
     # Record both lanes concurrently, streaming frames into ffmpeg as they
     # arrive so memory stays bounded regardless of duration/concurrency.
-    processed_mp4, raw_lane_mp4 = await asyncio.gather(
-        _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
-        _record_lane_mp4(hub, "raw", duration_s, CLIP_FPS),
-    )
-
-    if processed_mp4:
-        overlay_mp4 = processed_mp4
-        raw_mp4 = raw_lane_mp4  # may be b"" if the raw lane was silent
+    if hub.has_h264():
+        # Edge-H.264 camera: the full-framerate video lives in the H.264 lane
+        # (stream-copied, no re-encode). The processed JPEG lane (the worker's
+        # annotated sidecar) still provides the overlay clip.
+        processed_mp4, h264_mp4 = await asyncio.gather(
+            _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
+            _record_h264_mp4(hub, duration_s),
+        )
+        if processed_mp4:
+            overlay_mp4 = processed_mp4
+            raw_mp4 = h264_mp4
+        else:
+            overlay_mp4 = h264_mp4
+            raw_mp4 = b""
     else:
-        # No processed lane (worker offline): use the raw lane as the overlay
-        # and do not store a duplicate raw file.
-        overlay_mp4 = raw_lane_mp4
-        raw_mp4 = b""
+        processed_mp4, raw_lane_mp4 = await asyncio.gather(
+            _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
+            _record_lane_mp4(hub, "raw", duration_s, CLIP_FPS),
+        )
+        if processed_mp4:
+            overlay_mp4 = processed_mp4
+            raw_mp4 = raw_lane_mp4  # may be b"" if the raw lane was silent
+        else:
+            # No processed lane (worker offline): use the raw lane as the
+            # overlay and do not store a duplicate raw file.
+            overlay_mp4 = raw_lane_mp4
+            raw_mp4 = b""
 
     if not overlay_mp4:
         raise HTTPException(503, "No frames available from this camera during recording")

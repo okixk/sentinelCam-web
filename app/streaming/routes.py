@@ -253,6 +253,31 @@ async def _handle_worker_text(conn, text: str) -> None:
         classes = [str(c) for c in raw_classes if isinstance(c, str)]
         if not classes:
             return
+        # Store normalized boxes for the client-side overlay (sanitized: a
+        # compromised worker token must not inject unbounded payloads).
+        boxes: list[dict] = []
+        raw_boxes = msg.get("boxes")
+        if isinstance(raw_boxes, list):
+            for b in raw_boxes[:64]:
+                if not isinstance(b, dict):
+                    continue
+                try:
+                    boxes.append({
+                        "x": min(max(float(b.get("x", 0.0)), 0.0), 1.0),
+                        "y": min(max(float(b.get("y", 0.0)), 0.0), 1.0),
+                        "w": min(max(float(b.get("w", 0.0)), 0.0), 1.0),
+                        "h": min(max(float(b.get("h", 0.0)), 0.0), 1.0),
+                        "label": str(b.get("label", ""))[:40],
+                        "conf": round(min(max(float(b.get("conf", 0.0)), 0.0), 1.0), 3),
+                    })
+                except (TypeError, ValueError):
+                    continue
+        hub = frame_hubs.get(cam_id)
+        if hub is not None:
+            try:
+                hub.set_detections(classes, boxes, int(msg.get("ts") or 0))
+            except (TypeError, ValueError):
+                pass
         try:
             await handle_detection(cam_id, classes)
         except Exception:
@@ -305,6 +330,21 @@ async def camera_mjpeg(cam_id: int, user: User = Depends(get_current_user)) -> S
     response.headers["Pragma"] = "no-cache"
     response.headers["X-Accel-Buffering"] = "no"
     return response
+
+
+@router.get("/api/cameras/{cam_id}/detections")
+async def camera_detections(cam_id: int, user: User = Depends(get_current_user)):
+    """Latest worker detection metadata (normalized boxes) for the client-side
+    overlay on the H.264 live view, where boxes are not burned into the video."""
+    hub = frame_hubs.get(cam_id)
+    det = hub.latest_detections() if hub is not None else None
+    if det is None:
+        return JSONResponse({"classes": [], "boxes": [], "age_s": None})
+    return JSONResponse({
+        "classes": det["classes"],
+        "boxes": det["boxes"],
+        "age_s": round(time.time() - det["received_at"], 2),
+    })
 
 
 @router.get("/api/cameras/{cam_id}/frame.jpg")

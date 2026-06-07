@@ -152,5 +152,20 @@ class H264LaneSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub.stats()["h264_source"], "worker")
 
 
+class DetectionsStoreTest(unittest.TestCase):
+    """Latest worker detection metadata for the client-side overlay."""
+
+    def test_set_and_get(self):
+        hub = hub_mod.FrameHub(1)
+        self.assertIsNone(hub.latest_detections())
+        boxes = [{"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4, "label": "person", "conf": 0.9}]
+        hub.set_detections(["person"], boxes, 1234)
+        det = hub.latest_detections()
+        self.assertEqual(det["classes"], ["person"])
+        self.assertEqual(det["boxes"], boxes)
+        self.assertEqual(det["ts"], 1234)
+        self.assertGreater(det["received_at"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

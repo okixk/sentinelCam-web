@@ -118,6 +118,7 @@
       els.video.removeAttribute("src");
       els.video.load?.();
     } catch (_) {}
+    stopOverlay();  // hoisted; defined in the detection-overlay section below
   }
 
   function closeMjpeg() {
@@ -297,6 +298,7 @@
     showVideo();
     setStatus("Live · H.264", "ok");
     setHudMode("H.264");
+    startOverlay();  // worker boxes are not burned into this stream
     els.video.play?.().catch(() => {});
 
     // Watchdog: if no frame decodes within 6s the pipeline is wedged.
@@ -375,6 +377,104 @@
     setStatus(statusText || "Live · MJPEG", "ok");
     setHudMode("MJPEG");
   }
+
+  // -----------------------------
+  //  Detection overlay (H.264 view)
+  //
+  //  The H.264 live lane is the camera's own stream relayed without
+  //  re-encoding, so YOLO boxes are NOT burned in (unlike MJPEG). The worker
+  //  publishes normalized box coordinates instead; we poll them and draw on
+  //  a canvas over the <video>. A ~200-byte JSON poll twice a second costs
+  //  nothing compared to re-encoding video.
+  // -----------------------------
+
+  const overlayCanvas = document.createElement("canvas");
+  overlayCanvas.id = "viewer-overlay";
+  overlayCanvas.style.cssText =
+    "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
+  overlayCanvas.hidden = true;
+  els.video.insertAdjacentElement("afterend", overlayCanvas);
+
+  const OVERLAY_POLL_MS = 600;
+  const OVERLAY_STALE_S = 4;  // clear boxes when detections stop arriving
+  const OVERLAY_COLORS = ["#36a2eb", "#ff6384", "#ffce56", "#9966ff", "#4bc0c0", "#ff9f40"];
+  let overlayTimer = 0;
+  let overlayBoxes = [];
+
+  function overlayColor(label) {
+    let h = 0;
+    for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) >>> 0;
+    return OVERLAY_COLORS[h % OVERLAY_COLORS.length];
+  }
+
+  function drawOverlay() {
+    if (overlayCanvas.hidden) return;
+    const vw = els.video.videoWidth, vh = els.video.videoHeight;
+    const ew = els.video.clientWidth, eh = els.video.clientHeight;
+    if (!vw || !vh || !ew || !eh) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (overlayCanvas.width !== Math.round(ew * dpr) || overlayCanvas.height !== Math.round(eh * dpr)) {
+      overlayCanvas.width = Math.round(ew * dpr);
+      overlayCanvas.height = Math.round(eh * dpr);
+    }
+    const ctx = overlayCanvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, ew, eh);
+    if (!overlayBoxes.length) return;
+    // Map normalized stream coords onto the displayed video rectangle,
+    // accounting for object-fit letterboxing.
+    const scale = Math.min(ew / vw, eh / vh);
+    const dw = vw * scale, dh = vh * scale;
+    const ox = (ew - dw) / 2, oy = (eh - dh) / 2;
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.lineWidth = 2;
+    for (const b of overlayBoxes) {
+      const x = ox + b.x * dw, y = oy + b.y * dh, w = b.w * dw, h = b.h * dh;
+      const color = overlayColor(b.label || "");
+      ctx.strokeStyle = color;
+      ctx.strokeRect(x, y, w, h);
+      const text = `${b.label || "?"} ${Math.round((b.conf || 0) * 100)}%`;
+      const tw = ctx.measureText(text).width;
+      ctx.fillStyle = color;
+      ctx.fillRect(x - 1, Math.max(0, y - 17), tw + 8, 17);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(text, x + 3, Math.max(12, y - 5));
+    }
+  }
+
+  async function pollDetections() {
+    if (!currentCameraId || els.video.hidden) return;
+    try {
+      const resp = await fetch(`/api/cameras/${currentCameraId}/detections`, { cache: "no-store" });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      overlayBoxes = (data.age_s != null && data.age_s <= OVERLAY_STALE_S && Array.isArray(data.boxes))
+        ? data.boxes : [];
+    } catch (_) {
+      overlayBoxes = [];
+    }
+    drawOverlay();
+  }
+
+  function startOverlay() {
+    stopOverlay();
+    overlayCanvas.hidden = false;
+    overlayTimer = window.setInterval(pollDetections, OVERLAY_POLL_MS);
+    pollDetections();
+  }
+
+  function stopOverlay() {
+    if (overlayTimer) {
+      window.clearInterval(overlayTimer);
+      overlayTimer = 0;
+    }
+    overlayBoxes = [];
+    const ctx = overlayCanvas.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    overlayCanvas.hidden = true;
+  }
+
+  window.addEventListener("resize", drawOverlay);
 
   async function connectToCamera(camId) {
     if (!camId) {

@@ -134,3 +134,19 @@ replacement (`-probesize 32768 -analyzeduration 0`, keep wallclock timestamps)
 delivers all 90 frames with ~0.3 s startup. This affected the worker lane too
 (live view effectively ~20 fps instead of 30) — after deploying, the live view
 should look noticeably smoother.
+
+## Edge-H.264 follow-ups: client-side overlay, clips, admin status
+
+- **Detection overlay on the H.264 live view**: the worker now includes
+  normalized box coordinates in its `detection` JSON (`boxes` — additive, old
+  web servers ignore it); the web stores the latest set per camera and serves
+  it at `GET /api/cameras/{id}/detections`; viewer.js polls it (~2/s, ~200 B)
+  and draws the boxes on a canvas over the `<video>`. Sharp boxes at zero
+  encode cost — the MJPEG view keeps its burned-in overlay as before.
+- **Clips**: JPEG-lane clips are now sampled at a fixed output fps (repeating
+  frames when the lane is slower), so a 2 fps sidecar no longer turns a 10 s
+  clip into a 1.3 s time-lapse. For edge-H.264 cameras the raw clip is
+  stream-copied from the H.264 lane — full 1080p30 quality, near-zero CPU.
+- **Admin ops**: the worker tile checked `worker.configured`, a field the
+  backend never sent — it now reads `connected`/`alive` and shows the
+  heartbeat age (was: permanently "not configured").

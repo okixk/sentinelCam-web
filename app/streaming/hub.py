@@ -134,7 +134,7 @@ class _H264Lane:
 class FrameHub:
     """Stores the latest raw + processed JPEG and a rolling H.264 lane."""
 
-    __slots__ = ("camera_id", "_raw", "_processed", "_h264", "_lock")
+    __slots__ = ("camera_id", "_raw", "_processed", "_h264", "_lock", "_detections")
 
     def __init__(self, camera_id: int) -> None:
         self.camera_id = int(camera_id)
@@ -142,6 +142,9 @@ class FrameHub:
         self._processed = _Slot()
         self._h264 = _H264Lane()
         self._lock = asyncio.Lock()
+        # Latest worker detection metadata (classes + normalized boxes) for
+        # the client-side overlay on the edge-H.264 live view.
+        self._detections: Optional[dict] = None
 
     # ----- JPEG lanes -----------------------------------------------------
 
@@ -196,6 +199,19 @@ class FrameHub:
 
     def has_h264(self) -> bool:
         return self._h264.fresh()
+
+    # ----- detection metadata ----------------------------------------------
+
+    def set_detections(self, classes: list, boxes: list, ts_ms: int) -> None:
+        self._detections = {
+            "classes": classes,
+            "boxes": boxes,
+            "ts": int(ts_ms),
+            "received_at": time.time(),
+        }
+
+    def latest_detections(self) -> Optional[dict]:
+        return self._detections
 
     # ----- stats ----------------------------------------------------------
 
