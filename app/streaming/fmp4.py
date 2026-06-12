@@ -87,7 +87,11 @@ async def live_mp4(hub: FrameHub) -> AsyncIterator[bytes]:
 
     async def _feed() -> None:
         try:
-            async for au in hub.subscribe_h264(idle_timeout=10.0):
+            async for au in hub.subscribe_h264(
+                idle_timeout=10.0,
+                live_drop=True,
+                max_backlog=45,
+            ):
                 if proc.stdin is None or proc.stdin.is_closing():
                     break
                 proc.stdin.write(au)

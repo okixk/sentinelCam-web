@@ -112,6 +112,29 @@ class H264HubLaneTest(unittest.IsolatedAsyncioTestCase):
         hub.publish_h264(self.KF, True)
         self.assertTrue(hub.has_h264())
 
+    async def test_live_subscribe_drops_backlog_to_latest_keyframe(self):
+        hub = hub_mod.FrameHub(1)
+        hub.publish_h264(self.KF, True)
+        gen = hub.subscribe_h264(idle_timeout=0.05, live_drop=True, max_backlog=2)
+        self.assertEqual(await asyncio.wait_for(anext(gen), timeout=0.05), self.KF)
+
+        kf2 = b"\x00\x00\x01\x65idr-2"
+        d3 = b"\x00\x00\x01\x41delta-3"
+        d4 = b"\x00\x00\x01\x41delta-4"
+        hub.publish_h264(self.D1, False)
+        hub.publish_h264(self.D2, False)
+        hub.publish_h264(kf2, True)
+        hub.publish_h264(d3, False)
+        hub.publish_h264(d4, False)
+
+        got = [
+            await asyncio.wait_for(anext(gen), timeout=0.05),
+            await asyncio.wait_for(anext(gen), timeout=0.05),
+            await asyncio.wait_for(anext(gen), timeout=0.05),
+        ]
+        await gen.aclose()
+        self.assertEqual(got, [kf2, d3, d4])
+
 
 class H264LaneSourceTest(unittest.IsolatedAsyncioTestCase):
     """Exactly one producer (edge or worker) may own the H.264 lane at a time."""

@@ -258,8 +258,11 @@
   // -----------------------------
 
   const MSE_SUPPORTED = typeof window.MediaSource !== "undefined";
-  const LIVE_BUFFER_GOAL_S = 6;   // evict buffered media older than this
-  const LIVE_EDGE_LAG_S = 2.5;    // jump to the live edge if we drift this far back
+  const LIVE_BUFFER_GOAL_S = 2.5; // keep only a short live buffer
+  const LIVE_EDGE_LAG_S = 1.0;    // jump to the live edge if we drift this far back
+  const LIVE_TARGET_LAG_S = 0.25;
+  const MAX_LIVE_LAG_S = 5.0;     // reconnect instead of appending old video forever
+  const MAX_MSE_QUEUE = 8;
 
   // Read the avc1 codec string straight out of the fMP4 init segment's avcC box
   // so the SourceBuffer mime matches the actual stream profile/level exactly.
@@ -301,6 +304,35 @@
     startOverlay();  // worker boxes are not burned into this stream
     els.video.play?.().catch(() => {});
 
+    const reader = resp.body.getReader();
+    let sourceBuffer = null;
+    const queue = [];
+    let initBuf = new Uint8Array(0);
+    let healthTimer = 0;
+    let reconnecting = false;
+
+    const clearHealth = () => {
+      if (healthTimer) {
+        window.clearInterval(healthTimer);
+        healthTimer = 0;
+      }
+    };
+
+    const reconnectFmp4 = (reason) => {
+      if (reconnecting || currentAbort !== ctrl || currentCameraId !== camId) return;
+      reconnecting = true;
+      window.clearTimeout(stalled);
+      clearHealth();
+      console.warn("reconnecting fMP4 live view:", reason);
+      closeFmp4();
+      setStatus("Live H.264 reconnecting...", "connecting");
+      showPlaceholder(`Reconnecting ${currentCameraName || "camera"}...`, "");
+      window.setTimeout(() => {
+        const mode = els.transport?.value || "auto";
+        if (currentCameraId === camId && mode !== "mjpeg") connectToCamera(camId);
+      }, 350);
+    };
+
     // Watchdog: if no frame decodes within 6s the pipeline is wedged.
     const stalled = window.setTimeout(() => {
       if (currentAbort === ctrl && !els.video.videoWidth) {
@@ -313,24 +345,43 @@
     }, 6000);
     els.video.addEventListener("loadeddata", () => window.clearTimeout(stalled), { once: true });
 
-    const reader = resp.body.getReader();
-    let sourceBuffer = null;
-    const queue = [];
-    let initBuf = new Uint8Array(0);
-
     const pump = () => {
       if (!sourceBuffer || sourceBuffer.updating || !queue.length) return;
-      try { sourceBuffer.appendBuffer(queue.shift()); } catch (err) { console.warn("appendBuffer failed", err); }
+      try {
+        sourceBuffer.appendBuffer(queue.shift());
+      } catch (err) {
+        console.warn("appendBuffer failed", err);
+        reconnectFmp4("append failed");
+      }
     };
     const trim = () => {
       try {
         if (!sourceBuffer || sourceBuffer.updating || !els.video.buffered.length) return;
         const end = els.video.buffered.end(els.video.buffered.length - 1);
         const start = els.video.buffered.start(0);
+        const lag = end - els.video.currentTime;
+        if (lag > MAX_LIVE_LAG_S) {
+          reconnectFmp4(`live lag ${lag.toFixed(1)}s`);
+          return;
+        }
         if (end - start > LIVE_BUFFER_GOAL_S) sourceBuffer.remove(start, end - LIVE_BUFFER_GOAL_S);
-        if (end - els.video.currentTime > LIVE_EDGE_LAG_S) els.video.currentTime = end - 0.3;
+        if (lag > LIVE_EDGE_LAG_S) {
+          els.video.currentTime = Math.max(start, end - LIVE_TARGET_LAG_S);
+        }
       } catch (_) {}
     };
+    const enqueue = (chunk) => {
+      queue.push(chunk);
+      if (queue.length > MAX_MSE_QUEUE) {
+        reconnectFmp4(`MSE queue ${queue.length}`);
+        return false;
+      }
+      pump();
+      return true;
+    };
+    healthTimer = window.setInterval(() => {
+      if (currentAbort === ctrl) trim();
+    }, 1000);
 
     (async () => {
       try {
@@ -348,17 +399,18 @@
             sourceBuffer = mediaSource.addSourceBuffer(mime);
             try { sourceBuffer.mode = "sequence"; } catch (_) {}
             sourceBuffer.addEventListener("updateend", () => { pump(); trim(); });
-            queue.push(initBuf);
+            if (!enqueue(initBuf)) break;
             initBuf = new Uint8Array(0);
-            pump();
           } else {
-            queue.push(value);
-            pump();
+            if (!enqueue(value)) break;
           }
         }
+        clearHealth();
+        if (currentAbort === ctrl && !reconnecting) throw new Error("stream ended");
       } catch (err) {
         if (currentAbort === ctrl) {
           window.clearTimeout(stalled);
+          clearHealth();
           console.warn("fMP4 stream error", err);
           fmp4FailedFor.add(camId);
           if (currentCameraId === camId && (els.transport?.value || "auto") === "auto") {
@@ -472,6 +524,8 @@
     overlayCanvas.hidden = true;
   }
 
+  els.video.addEventListener("loadedmetadata", drawOverlay);
+  els.video.addEventListener("resize", drawOverlay);
   window.addEventListener("resize", drawOverlay);
 
   async function connectToCamera(camId) {

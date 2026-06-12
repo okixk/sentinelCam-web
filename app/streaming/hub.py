@@ -81,7 +81,7 @@ class _H264Lane:
         old, self._waiter = self._waiter, asyncio.Event()
         old.set()
 
-    def _last_keyframe_tail(self) -> tuple[list[tuple[int, bytes]], int]:
+    def _last_keyframe_tail_items(self) -> tuple[list[tuple[int, bytes, bool]], int]:
         items = list(self._buf)
         kf_idx = None
         for i in range(len(items) - 1, -1, -1):
@@ -91,7 +91,11 @@ class _H264Lane:
         if kf_idx is None:
             return [], (items[-1][0] if items else 0)
         tail = items[kf_idx:]
-        return [(s, au) for (s, au, _kf) in tail], tail[-1][0]
+        return tail, tail[-1][0]
+
+    def _last_keyframe_tail(self) -> tuple[list[tuple[int, bytes]], int]:
+        tail, last_seq = self._last_keyframe_tail_items()
+        return [(s, au) for (s, au, _kf) in tail], last_seq
 
     async def _after(self, last_seq: int, timeout: float) -> tuple[list[tuple[int, bytes, bool]], int]:
         fresh = [t for t in self._buf if t[0] > last_seq]
@@ -105,13 +109,21 @@ class _H264Lane:
         fresh = [t for t in self._buf if t[0] > last_seq]
         return fresh, (fresh[-1][0] if fresh else last_seq)
 
-    async def subscribe(self, *, idle_timeout: float = 10.0) -> AsyncIterator[bytes]:
+    async def subscribe(
+        self,
+        *,
+        idle_timeout: float = 10.0,
+        live_drop: bool = False,
+        max_backlog: int = 90,
+    ) -> AsyncIterator[bytes]:
         """Yield Annex-B access units, starting from a keyframe.
 
         Emits the current keyframe tail immediately if one is buffered;
         otherwise waits for the next keyframe (skipping leading delta frames so
         the downstream ffmpeg copy always starts on an IDR with parameter sets).
         Stops if no new unit arrives within ``idle_timeout`` seconds.
+        When ``live_drop`` is enabled, a slow live viewer skips buffered
+        backlog and resumes from a keyframe instead of accumulating latency.
         """
         tail, last_seq = self._last_keyframe_tail()
         seen_keyframe = bool(tail)
@@ -119,10 +131,29 @@ class _H264Lane:
             yield au
 
         while True:
+            prev_seq = last_seq
             fresh, last_seq = await self._after(last_seq, timeout=idle_timeout)
             if not fresh:
                 # idle timeout — nothing new; let the caller decide to stop.
                 return
+            if live_drop and max_backlog > 0 and len(fresh) > max_backlog:
+                kf_idx = None
+                for i in range(len(fresh) - 1, -1, -1):
+                    if fresh[i][2]:
+                        kf_idx = i
+                        break
+                if kf_idx is not None:
+                    fresh = fresh[kf_idx:]
+                    seen_keyframe = True
+                else:
+                    tail, tail_last = self._last_keyframe_tail_items()
+                    if tail and tail[0][0] > prev_seq:
+                        fresh = tail
+                        last_seq = tail_last
+                        seen_keyframe = True
+                    else:
+                        fresh = []
+                        seen_keyframe = False
             for _seq, au, is_kf in fresh:
                 if not seen_keyframe:
                     if not is_kf:
@@ -194,8 +225,18 @@ class FrameHub:
     def publish_h264(self, access_unit: bytes, is_keyframe: bool, source: str = "worker") -> None:
         self._h264.publish(access_unit, is_keyframe, source)
 
-    def subscribe_h264(self, *, idle_timeout: float = 10.0) -> AsyncIterator[bytes]:
-        return self._h264.subscribe(idle_timeout=idle_timeout)
+    def subscribe_h264(
+        self,
+        *,
+        idle_timeout: float = 10.0,
+        live_drop: bool = False,
+        max_backlog: int = 90,
+    ) -> AsyncIterator[bytes]:
+        return self._h264.subscribe(
+            idle_timeout=idle_timeout,
+            live_drop=live_drop,
+            max_backlog=max_backlog,
+        )
 
     def has_h264(self) -> bool:
         return self._h264.fresh()
