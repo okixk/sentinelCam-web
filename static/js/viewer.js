@@ -390,10 +390,8 @@
 
   const overlayCanvas = document.createElement("canvas");
   overlayCanvas.id = "viewer-overlay";
-  overlayCanvas.style.cssText =
-    "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
   overlayCanvas.hidden = true;
-  els.video.insertAdjacentElement("afterend", overlayCanvas);
+  els.stage?.appendChild(overlayCanvas);
 
   const OVERLAY_POLL_MS = 600;
   const OVERLAY_STALE_S = 4;  // clear boxes when detections stop arriving

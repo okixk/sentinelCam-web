@@ -2009,6 +2009,19 @@ body.modal-open {
   display: none;
 }
 
+#viewer-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  pointer-events: none;
+}
+
+#viewer-overlay[hidden] {
+  display: none;
+}
+
 .live-watermark {
   position: absolute;
   left: 16px;

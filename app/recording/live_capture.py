@@ -17,6 +17,7 @@ a thumbnail warmup so the gallery thumbnail shows up quickly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -42,6 +43,50 @@ MAX_CLIP_FRAMES = max(ALLOWED_CLIP_DURATIONS) * CLIP_FPS * 2  # generous safety 
 
 def _audit(event: str, **kwargs) -> None:
     AUDIT.info(json.dumps({"event": event, **kwargs, "timestamp": time.time()}))
+
+
+async def _collect_process_output(
+    proc: asyncio.subprocess.Process,
+    feed_task: asyncio.Task[None],
+) -> tuple[bytes, bytes]:
+    """Collect ffmpeg output while another task feeds stdin.
+
+    ``Process.communicate()`` closes stdin even when no input argument is
+    supplied. That races with our feed task and can leave ffmpeg with an empty
+    input stream, which surfaces to callers as a 500 during clip recording.
+    """
+    if proc.stdout is None or proc.stderr is None:
+        raise RuntimeError("ffmpeg stdout/stderr pipe not available")
+    stdout_task = asyncio.create_task(proc.stdout.read())
+    stderr_task = asyncio.create_task(proc.stderr.read())
+    try:
+        await feed_task
+        await proc.wait()
+        stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+        return stdout, stderr
+    except BaseException:
+        for task in (feed_task, stdout_task, stderr_task):
+            task.cancel()
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            with contextlib.suppress(Exception):
+                await proc.wait()
+        raise
+
+
+async def _gather_recorders(*aws):
+    tasks = [asyncio.create_task(aw) for aw in aws]
+    try:
+        return await asyncio.gather(*tasks)
+    except Exception:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def _check_quota(user_id: int, add_bytes: int, cleanup_keys: list[str]) -> None:
@@ -246,8 +291,7 @@ async def _record_lane_mp4(hub: FrameHub, lane: str, duration_s: int, fps: int) 
                 pass
 
     feed_task = asyncio.create_task(feed())
-    stdout, stderr = await proc.communicate()
-    await feed_task
+    stdout, stderr = await _collect_process_output(proc, feed_task)
     if written == 0:
         return b""
     if proc.returncode != 0:
@@ -309,8 +353,7 @@ async def _record_h264_mp4(hub: FrameHub, duration_s: int) -> bytes:
                 pass
 
     feed_task = asyncio.create_task(feed())
-    stdout, stderr = await proc.communicate()
-    await feed_task
+    stdout, stderr = await _collect_process_output(proc, feed_task)
     if written == 0:
         return b""
     if proc.returncode != 0:
@@ -346,33 +389,43 @@ async def record_clip_from_hub(
     log.info("recording clip for user %d camera %d (%ds)", user_id, hub.camera_id, duration_s)
     # Record both lanes concurrently, streaming frames into ffmpeg as they
     # arrive so memory stays bounded regardless of duration/concurrency.
-    if hub.has_h264():
-        # Edge-H.264 camera: the full-framerate video lives in the H.264 lane
-        # (stream-copied, no re-encode). The processed JPEG lane (the worker's
-        # annotated sidecar) still provides the overlay clip.
-        processed_mp4, h264_mp4 = await asyncio.gather(
-            _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
-            _record_h264_mp4(hub, duration_s),
-        )
-        if processed_mp4:
-            overlay_mp4 = processed_mp4
-            raw_mp4 = h264_mp4
+    try:
+        if hub.has_h264():
+            # Edge-H.264 camera: the full-framerate video lives in the H.264 lane
+            # (stream-copied, no re-encode). The processed JPEG lane (the worker's
+            # annotated sidecar) still provides the overlay clip.
+            processed_mp4, h264_mp4 = await _gather_recorders(
+                _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
+                _record_h264_mp4(hub, duration_s),
+            )
+            if processed_mp4:
+                overlay_mp4 = processed_mp4
+                raw_mp4 = h264_mp4
+            else:
+                overlay_mp4 = h264_mp4
+                raw_mp4 = b""
         else:
-            overlay_mp4 = h264_mp4
-            raw_mp4 = b""
-    else:
-        processed_mp4, raw_lane_mp4 = await asyncio.gather(
-            _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
-            _record_lane_mp4(hub, "raw", duration_s, CLIP_FPS),
-        )
-        if processed_mp4:
-            overlay_mp4 = processed_mp4
-            raw_mp4 = raw_lane_mp4  # may be b"" if the raw lane was silent
-        else:
-            # No processed lane (worker offline): use the raw lane as the
-            # overlay and do not store a duplicate raw file.
-            overlay_mp4 = raw_lane_mp4
-            raw_mp4 = b""
+            processed_mp4, raw_lane_mp4 = await _gather_recorders(
+                _record_lane_mp4(hub, "processed", duration_s, CLIP_FPS),
+                _record_lane_mp4(hub, "raw", duration_s, CLIP_FPS),
+            )
+            if processed_mp4:
+                overlay_mp4 = processed_mp4
+                raw_mp4 = raw_lane_mp4  # may be b"" if the raw lane was silent
+            else:
+                # No processed lane (worker offline): use the raw lane as the
+                # overlay and do not store a duplicate raw file.
+                overlay_mp4 = raw_lane_mp4
+                raw_mp4 = b""
+    except FileNotFoundError as exc:
+        log.exception("ffmpeg executable not found while recording clip")
+        raise HTTPException(503, "Clip recording backend unavailable (ffmpeg not found)") from exc
+    except RuntimeError as exc:
+        log.warning("clip recording failed for camera %d", hub.camera_id, exc_info=True)
+        raise HTTPException(503, f"Clip recording failed: {str(exc)[:240]}") from exc
+    except OSError as exc:
+        log.exception("could not start ffmpeg while recording clip")
+        raise HTTPException(503, "Clip recording backend unavailable") from exc
 
     if not overlay_mp4:
         raise HTTPException(503, "No frames available from this camera during recording")
